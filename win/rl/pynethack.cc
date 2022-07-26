@@ -64,25 +64,36 @@ checked_conversion(py::handle h, const std::vector<ssize_t> &shape)
 {
     if (h.is_none())
         return nullptr;
-    py::array array = py::array::ensure(h);
-    if (!array)
-        throw std::runtime_error("Numpy array required");
+    if (!py::isinstance<py::array>(h))
+        throw std::invalid_argument("Numpy array required");
 
+    py::array array = py::array::ensure(h);
     // We don't use py::array_t<T> (or <T, 0>) above as that still
     // causes conversions to "larger" types.
-
-    // TODO: Better error messages here and below.
     if (!array.dtype().is(py::dtype::of<T>()))
-        throw std::runtime_error("Numpy array of right type required");
+        throw std::invalid_argument("Buffer dtype mismatch.");
 
     py::buffer_info buf = array.request();
 
-    if (buf.ndim != shape.size())
-        throw std::runtime_error("array has wrong number of dims");
-    if (!std::equal(shape.begin(), shape.end(), buf.shape.begin()))
-        throw std::runtime_error("Array has wrong shape");
+    if (buf.ndim != shape.size()) {
+        std::ostringstream ss;
+        ss << "Array has wrong number of dimensions (expected "
+           << shape.size() << ", got " << buf.ndim << ")";
+        throw std::invalid_argument(ss.str());
+    }
+    if (!std::equal(shape.begin(), shape.end(), buf.shape.begin())) {
+        std::ostringstream ss;
+        ss << "Array has wrong shape (expected [ ";
+        for (auto i : shape)
+            ss << i << " ";
+        ss << "], got [ ";
+        for (auto i : buf.shape)
+            ss << i << " ";
+        ss << "])";
+        throw std::invalid_argument(ss.str());
+    }
     if (!(array.flags() & py::array::c_style))
-        throw std::runtime_error("Array isn't C contiguous");
+        throw std::invalid_argument("Array isn't C contiguous");
 
     return static_cast<T *>(buf.ptr);
 }
@@ -91,7 +102,8 @@ class Nethack
 {
   public:
     Nethack(std::string dlpath, std::string ttyrec, std::string hackdir,
-            std::string nethackoptions, bool spawn_monsters)
+            std::string nethackoptions, bool spawn_monsters,
+            std::string scoreprefix)
         : Nethack(std::move(dlpath), std::move(hackdir),
                   std::move(nethackoptions), spawn_monsters)
     {
@@ -100,6 +112,20 @@ class Nethack
             PyErr_SetFromErrnoWithFilename(PyExc_OSError, ttyrec.c_str());
             throw py::error_already_set();
         }
+
+        if (ttyrec.size() > sizeof(settings_.scoreprefix) - 1) {
+            throw std::length_error("ttyrec filepath too long");
+        }
+
+        if (scoreprefix.size() > sizeof(settings_.scoreprefix) - 1) {
+            throw std::length_error("scoreprefix too long");
+        }
+        strncpy(settings_.scoreprefix, scoreprefix.c_str(),
+                scoreprefix.length());
+        std::size_t found = ttyrec.rfind("/");
+        if (found != std::string::npos && found + 1 < ttyrec.length())
+            strncpy(settings_.ttyrecname, &ttyrec.c_str()[found + 1],
+                    ttyrec.length() - found - 1);
     }
 
     Nethack(std::string dlpath, std::string hackdir,
@@ -159,6 +185,12 @@ class Nethack
             PyErr_SetFromErrnoWithFilename(PyExc_OSError, ttyrec.c_str());
             throw py::error_already_set();
         }
+
+        std::size_t found = ttyrec.rfind("/");
+        if (found != std::string::npos && (found + 1) < ttyrec.length())
+            strncpy(settings_.ttyrecname, &ttyrec.c_str()[found + 1],
+                    ttyrec.length() - found - 1);
+
         // Reset environment, then close original FILE. Cannot use freopen
         // as the game may still need to write to the original file but
         // reset() wants to get the new one already.
@@ -178,6 +210,9 @@ class Nethack
                 py::object screen_descriptions, py::object tty_chars,
                 py::object tty_colors, py::object tty_cursor, py::object misc)
     {
+        if (nle_)
+            throw std::runtime_error("set_buffers called after reset()");
+
         std::vector<ssize_t> dungeon{ ROWNO, COLNO - 1 };
         obs_.glyphs = checked_conversion<int16_t>(glyphs, dungeon);
         obs_.chars = checked_conversion<uint8_t>(chars, dungeon);
@@ -306,6 +341,9 @@ class Nethack
     {
         py::gil_scoped_release gil;
 
+        if (!ttyrec)
+            strncpy(settings_.ttyrecname, "", sizeof(settings_.ttyrecname));
+
         if (!nle_) {
             nle_ =
                 nle_start(dlpath_.c_str(), &obs_, ttyrec ? ttyrec : ttyrec_,
@@ -335,9 +373,10 @@ PYBIND11_MODULE(_pynethack, m)
 
     py::class_<Nethack>(m, "Nethack")
         .def(py::init<std::string, std::string, std::string, std::string,
-                      bool>(),
+                      bool, std::string>(),
              py::arg("dlpath"), py::arg("ttyrec"), py::arg("hackdir"),
-             py::arg("nethackoptions"), py::arg("spawn_monsters") = true)
+             py::arg("nethackoptions"), py::arg("spawn_monsters") = true,
+             py::arg("scoreprefix") = "")
         .def(py::init<std::string, std::string, std::string, bool>(),
              py::arg("dlpath"), py::arg("hackdir"), py::arg("nethackoptions"),
              py::arg("spawn_monsters") = true)
@@ -407,6 +446,7 @@ PYBIND11_MODULE(_pynethack, m)
     mn.attr("NLE_BL_DNUM") = py::int_(NLE_BL_DNUM);
     mn.attr("NLE_BL_DLEVEL") = py::int_(NLE_BL_DLEVEL);
     mn.attr("NLE_BL_CONDITION") = py::int_(NLE_BL_CONDITION);
+    mn.attr("NLE_BL_ALIGN") = py::int_(NLE_BL_ALIGN);
 
     mn.attr("NLE_ALLOW_SEEDING") =
 #ifdef NLE_ALLOW_SEEDING
@@ -535,31 +575,40 @@ PYBIND11_MODULE(_pynethack, m)
         py::int_(MG_OBJPILE); /* more than one stack of objects */
     mn.attr("MG_BW_LAVA") = py::int_(MG_BW_LAVA); /* 'black & white lava' */
 
-    // Expose macros as Python functions.
+    // Expose macros as Python functions, with optional vectorization.
     mn.def("glyph_is_monster",
-           [](int glyph) { return glyph_is_monster(glyph); });
-    mn.def("glyph_is_normal_monster",
-           [](int glyph) { return glyph_is_normal_monster(glyph); });
-    mn.def("glyph_is_pet", [](int glyph) { return glyph_is_pet(glyph); });
-    mn.def("glyph_is_body", [](int glyph) { return glyph_is_body(glyph); });
+           py::vectorize([](int glyph) { return glyph_is_monster(glyph); }));
+    mn.def("glyph_is_normal_monster", py::vectorize([](int glyph) {
+               return glyph_is_normal_monster(glyph);
+           }));
+    mn.def("glyph_is_pet",
+           py::vectorize([](int glyph) { return glyph_is_pet(glyph); }));
+    mn.def("glyph_is_body",
+           py::vectorize([](int glyph) { return glyph_is_body(glyph); }));
     mn.def("glyph_is_statue",
-           [](int glyph) { return glyph_is_statue(glyph); });
-    mn.def("glyph_is_ridden_monster",
-           [](int glyph) { return glyph_is_ridden_monster(glyph); });
-    mn.def("glyph_is_detected_monster",
-           [](int glyph) { return glyph_is_detected_monster(glyph); });
-    mn.def("glyph_is_invisible",
-           [](int glyph) { return glyph_is_invisible(glyph); });
-    mn.def("glyph_is_normal_object",
-           [](int glyph) { return glyph_is_normal_object(glyph); });
+           py::vectorize([](int glyph) { return glyph_is_statue(glyph); }));
+    mn.def("glyph_is_ridden_monster", py::vectorize([](int glyph) {
+               return glyph_is_ridden_monster(glyph);
+           }));
+    mn.def("glyph_is_detected_monster", py::vectorize([](int glyph) {
+               return glyph_is_detected_monster(glyph);
+           }));
+    mn.def("glyph_is_invisible", py::vectorize([](int glyph) {
+               return glyph_is_invisible(glyph);
+           }));
+    mn.def("glyph_is_normal_object", py::vectorize([](int glyph) {
+               return glyph_is_normal_object(glyph);
+           }));
     mn.def("glyph_is_object",
-           [](int glyph) { return glyph_is_object(glyph); });
-    mn.def("glyph_is_trap", [](int glyph) { return glyph_is_trap(glyph); });
-    mn.def("glyph_is_cmap", [](int glyph) { return glyph_is_cmap(glyph); });
+           py::vectorize([](int glyph) { return glyph_is_object(glyph); }));
+    mn.def("glyph_is_trap",
+           py::vectorize([](int glyph) { return glyph_is_trap(glyph); }));
+    mn.def("glyph_is_cmap",
+           py::vectorize([](int glyph) { return glyph_is_cmap(glyph); }));
     mn.def("glyph_is_swallow",
-           [](int glyph) { return glyph_is_swallow(glyph); });
+           py::vectorize([](int glyph) { return glyph_is_swallow(glyph); }));
     mn.def("glyph_is_warning",
-           [](int glyph) { return glyph_is_warning(glyph); });
+           py::vectorize([](int glyph) { return glyph_is_warning(glyph); }));
 
 #ifdef NLE_USE_TILES
     mn.attr("glyph2tile") =
@@ -647,14 +696,24 @@ PYBIND11_MODULE(_pynethack, m)
                    + "' explain='" + std::string(cs.explain) + "'>";
         });
 
-    mn.def("glyph_to_mon", [](int glyph) { return glyph_to_mon(glyph); });
-    mn.def("glyph_to_obj", [](int glyph) { return glyph_to_obj(glyph); });
-    mn.def("glyph_to_trap", [](int glyph) { return glyph_to_trap(glyph); });
-    mn.def("glyph_to_cmap", [](int glyph) { return glyph_to_cmap(glyph); });
-    mn.def("glyph_to_swallow",
-           [](int glyph) { return glyph_to_swallow(glyph); });
-    mn.def("glyph_to_warning",
-           [](int glyph) { return glyph_to_warning(glyph); });
+    mn.def("glyph_to_mon", py::vectorize([](int glyph) -> int {
+               return glyph_to_mon(glyph);
+           }));
+    mn.def("glyph_to_obj", py::vectorize([](int glyph) -> int {
+               return glyph_to_obj(glyph);
+           }));
+    mn.def("glyph_to_trap", py::vectorize([](int glyph) -> int {
+               return glyph_to_trap(glyph);
+           }));
+    mn.def("glyph_to_cmap", py::vectorize([](int glyph) -> int {
+               return glyph_to_cmap(glyph);
+           }));
+    mn.def("glyph_to_swallow", py::vectorize([](int glyph) -> int {
+               return glyph_to_swallow(glyph);
+           }));
+    mn.def("glyph_to_warning", py::vectorize([](int glyph) -> int {
+               return glyph_to_warning(glyph);
+           }));
 
     py::class_<objclass>(
         mn, "objclass",

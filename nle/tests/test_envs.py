@@ -2,6 +2,7 @@
 #
 # Copyright (c) Facebook, Inc. and its affiliates.
 import os
+import pathlib
 import random
 import sys
 import tempfile
@@ -121,11 +122,11 @@ class TestGymEnv:
             if env_name.startswith("NetHackChallenge-"):
                 pytest.skip("No wizard mode in NetHackChallenge")
             env = gym.make(env_name, wizard=wizard)
-            assert "playmode:debug" in env.env._options
+            assert "playmode:debug" in env.nethack.options
         else:
             # do not send a parameter to test a default
             env = gym.make(env_name)
-            assert "playmode:debug" not in env.env._options
+            assert "playmode:debug" not in env.nethack.options
 
 
 class TestWizkit:
@@ -217,20 +218,24 @@ class TestGymEnvRollout:
     def test_rollout(self, env_name, rollout_len):
         """Tests rollout_len steps (or until termination) of random policy."""
         with tempfile.TemporaryDirectory() as savedir:
-            env = gym.make(env_name, savedir=savedir)
+            env = gym.make(env_name, save_ttyrec_every=1, savedir=savedir)
             rollout_env(env, rollout_len)
             env.close()
 
             assert os.path.exists(
-                os.path.join(savedir, "nle.%i.0.ttyrec.bz2" % os.getpid())
+                os.path.join(
+                    savedir,
+                    "nle.%i.0.ttyrec%i.bz2" % (os.getpid(), nethack.TTYREC_VERSION),
+                )
+            )
+            assert os.path.exists(
+                os.path.join(savedir, "nle.%i.xlogfile" % os.getpid())
             )
 
     def test_rollout_no_archive(self, env_name, rollout_len):
         """Tests rollout_len steps (or until termination) of random policy."""
         env = gym.make(env_name, savedir=None)
         assert env.savedir is None
-        assert env._stats_file is None
-        assert env._stats_logger is None
         rollout_env(env, rollout_len)
 
     def test_seed_interface_output(self, env_name, rollout_len):
@@ -320,7 +325,7 @@ class TestGymEnvRollout:
 class TestGymDynamics:
     """Tests a few game dynamics."""
 
-    @pytest.fixture(autouse=True)  # will be applied to all tests in class
+    @pytest.fixture(autouse=True)  # Will be applied to all tests in class.
     def make_cwd_tmp(self, tmpdir):
         """Makes cwd point to the test's tmpdir."""
         with tmpdir.as_cwd():
@@ -335,16 +340,15 @@ class TestGymDynamics:
             e.close()
 
     def test_kick_and_quit(self, env):
-        actions = env._actions
         env.reset()
-        kick = actions.index(nethack.Command.KICK)
+        kick = env.actions.index(nethack.Command.KICK)
         obs, reward, done, _ = env.step(kick)
         assert b"In what direction? " in bytes(obs["message"])
         env.step(nethack.MiscAction.MORE)
 
         # Hack to quit.
-        env.env.step(nethack.M("q"))
-        obs, reward, done, _ = env.step(actions.index(ord("y")))
+        env.nethack.step(nethack.M("q"))
+        obs, reward, done, _ = env.step(env.actions.index(ord("y")))
 
         assert done
         assert reward == 0.0
@@ -364,14 +368,40 @@ class TestGymDynamics:
         # Hopefully, we got some positive reward by now.
 
         # Get out of any menu / yn_function.
-        env.step(env._actions.index(ord("\r")))
+        env.step(env.actions.index(ord("\r")))
 
         # Hack to quit.
-        env.env.step(nethack.M("q"))
-        _, reward, done, _ = env.step(env._actions.index(ord("y")))
+        env.nethack.step(nethack.M("q"))
+        _, reward, done, _ = env.step(env.actions.index(ord("y")))
 
         assert done
         assert reward == 0.0
+
+    def test_ttyrec_every(self):
+        path = pathlib.Path(".")
+        env = gym.make("NetHackChallenge-v0", save_ttyrec_every=2, savedir=str(path))
+        pid = os.getpid()
+        for episode in range(10):
+            env.reset()
+            for c in [ord(" "), ord(" "), ord("<"), ord("y")]:
+                _, _, done, *_ = env.step(env.actions.index(c))
+            assert done
+
+            if episode % 2 != 0:
+                continue
+            contents = set(str(p) for p in path.iterdir())
+            # `contents` includes xlogfile and ttyrecs.
+            assert len(contents) - 1 == episode // 2 + 1
+            assert (
+                "nle.%i.%i.ttyrec%i.bz2" % (pid, episode, nethack.TTYREC_VERSION)
+                in contents
+            )
+            assert "nle.%i.xlogfile" % pid in contents
+
+        with open("nle.%i.xlogfile" % pid, "r") as f:
+            entries = f.readlines()
+
+        assert len(entries) == 10
 
 
 class TestEnvMisc:
@@ -379,7 +409,11 @@ class TestEnvMisc:
 
     @pytest.fixture
     def env(self):
-        e = gym.make("NetHackScore-v0")
+        if sys.version_info < (3, 8):
+            e = gym.make("NetHackScore-v0")
+        else:
+            # gym 0.24+ doesnt like the shape of our observations.
+            e = gym.make("NetHackScore-v0")
         try:
             yield e
         finally:
@@ -398,8 +432,8 @@ class TestNetHackChallenge:
         ):
             env.seed()
         with pytest.raises(RuntimeError, match="Should not try changing seeds"):
-            env.env.set_initial_seeds(0, 0, True)
+            env.nethack.set_initial_seeds(0, 0, True)
 
         if not nethack.NLE_ALLOW_SEEDING:
             with pytest.raises(RuntimeError, match="Seeding not enabled"):
-                env.env._pynethack.set_initial_seeds(0, 0, True)
+                env.nethack._pynethack.set_initial_seeds(0, 0, True)

@@ -55,8 +55,8 @@ class TestNetHack:
 
         chars, blstats = game.reset()
 
-        assert chars.shape == (21, 79)
-        assert blstats.shape == (26,)
+        assert chars.shape == nethack.DUNGEON_SHAPE
+        assert blstats.shape == nethack.BLSTATS_SHAPE
 
         game.step(ord("y"))
         game.step(ord("y"))
@@ -191,7 +191,9 @@ class TestNetHackFurther:
             assert class_sym.explain == "human or elf"
 
         game.close()
-        assert os.path.isfile(os.path.join(os.getcwd(), "nle.ttyrec.bz2"))
+        assert os.path.isfile(
+            os.path.join(os.getcwd(), "nle.ttyrec%i.bz2" % nethack.TTYREC_VERSION)
+        )
 
     def test_illegal_filename(self):
         with pytest.raises(IOError):
@@ -199,6 +201,41 @@ class TestNetHackFurther:
         game = nethack.Nethack()
         with pytest.raises(IOError):
             game.reset("")
+
+    def test_set_buffers_after_reset(self):
+        game = nethack.Nethack()
+        game.reset()
+        with pytest.raises(RuntimeError, match=r"set_buffers called after reset()"):
+            game._pynethack.set_buffers()
+
+    def test_nethack_random_character(self):
+        game = nethack.Nethack(playername="Hugo-@")
+        assert "race:random" in game.options
+        assert "gender:random" in game.options
+        assert "align:random" in game.options
+
+        game = nethack.Nethack(playername="Jurgen-wiz-gno-cha-mal")
+        assert "race:random" not in game.options
+        assert "gender:random" not in game.options
+        assert "align:random" not in game.options
+
+        game = nethack.Nethack(
+            playername="Albert-@",
+            options=list(nethack.NETHACKOPTIONS) + ["align:lawful"],
+        )
+        assert "race:random" in game.options
+        assert "gender:random" in game.options
+        assert "align:random" not in game.options
+        assert "align:lawful" in game.options
+
+        game = nethack.Nethack(
+            playername="Rachel",
+            options=list(nethack.NETHACKOPTIONS) + ["gender:female"],
+        )
+        assert "race:random" not in game.options
+        assert "gender:random" not in game.options
+        assert "align:random" not in game.options
+        assert "gender:female" in game.options
 
 
 class TestNethackSomeObs:
@@ -367,6 +404,178 @@ class TestNethackFunctionsAndConstants:
         assert nethack.glyph2tile[nethack.GLYPH_MON_OFF] == 0
         assert nethack.glyph2tile[nethack.GLYPH_PET_OFF] == 0
         assert nethack.glyph2tile[nethack.GLYPH_DETECT_OFF] == 0
+
+    def test_glyph_is(self):
+        assert nethack.glyph_is_monster(nethack.GLYPH_MON_OFF)
+        assert nethack.glyph_is_pet(nethack.GLYPH_PET_OFF)
+        assert nethack.glyph_is_invisible(nethack.GLYPH_INVIS_OFF)
+        assert nethack.glyph_is_detected_monster(nethack.GLYPH_DETECT_OFF)
+        assert nethack.glyph_is_body(nethack.GLYPH_BODY_OFF)
+        assert nethack.glyph_is_ridden_monster(nethack.GLYPH_RIDDEN_OFF)
+        assert nethack.glyph_is_object(nethack.GLYPH_OBJ_OFF)
+        assert nethack.glyph_is_cmap(nethack.GLYPH_CMAP_OFF)
+        # No glyph_is_explode, glyph_is_zap in NH.
+        assert nethack.glyph_is_swallow(nethack.GLYPH_SWALLOW_OFF)
+        assert nethack.glyph_is_warning(nethack.GLYPH_WARNING_OFF)
+        assert nethack.glyph_is_statue(nethack.GLYPH_STATUE_OFF)
+
+        vec = np.array(
+            [
+                nethack.GLYPH_MON_OFF,
+                nethack.GLYPH_PET_OFF,
+                nethack.GLYPH_INVIS_OFF,
+                nethack.GLYPH_DETECT_OFF,
+                nethack.GLYPH_BODY_OFF,
+                nethack.GLYPH_RIDDEN_OFF,
+                nethack.GLYPH_OBJ_OFF,
+                nethack.GLYPH_CMAP_OFF,
+                nethack.GLYPH_EXPLODE_OFF,
+                nethack.GLYPH_ZAP_OFF,
+                nethack.GLYPH_SWALLOW_OFF,
+                nethack.GLYPH_WARNING_OFF,
+                nethack.GLYPH_STATUE_OFF,
+            ],
+            dtype=np.int32,
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_monster(vec),
+            np.isin(
+                vec,
+                [
+                    nethack.GLYPH_MON_OFF,
+                    nethack.GLYPH_PET_OFF,
+                    nethack.GLYPH_DETECT_OFF,
+                    nethack.GLYPH_RIDDEN_OFF,
+                ],
+            ),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_pet(vec),
+            np.isin(vec, [nethack.GLYPH_PET_OFF]),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_invisible(vec),
+            np.isin(vec, [nethack.GLYPH_INVIS_OFF]),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_normal_object(vec),
+            np.isin(vec, [nethack.GLYPH_OBJ_OFF]),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_detected_monster(vec),
+            np.isin(vec, [nethack.GLYPH_DETECT_OFF]),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_body(vec),
+            np.isin(vec, [nethack.GLYPH_BODY_OFF]),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_ridden_monster(vec),
+            np.isin(vec, [nethack.GLYPH_RIDDEN_OFF]),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_object(vec),
+            np.isin(
+                vec,
+                [
+                    nethack.GLYPH_BODY_OFF,
+                    nethack.GLYPH_OBJ_OFF,
+                    nethack.GLYPH_STATUE_OFF,
+                ],
+            ),
+        )
+        assert np.all(nethack.glyph_is_trap(vec) == 0)
+        for idx in range(nethack.MAXPCHARS):  # Find an actual trap.
+            if "trap" in nethack.symdef.from_idx(idx).explanation:
+                assert nethack.glyph_is_trap(nethack.GLYPH_CMAP_OFF + idx)
+                break
+        np.testing.assert_array_equal(  # Explosions are cmaps?
+            nethack.glyph_is_cmap(vec),
+            np.isin(vec, [nethack.GLYPH_CMAP_OFF, nethack.GLYPH_EXPLODE_OFF]),
+        )
+        # No glyph_is_explode, glyph_is_zap in NH.
+        np.testing.assert_array_equal(
+            nethack.glyph_is_swallow(vec),
+            np.isin(vec, [nethack.GLYPH_SWALLOW_OFF]),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_warning(vec),
+            np.isin(vec, [nethack.GLYPH_WARNING_OFF]),
+        )
+        np.testing.assert_array_equal(
+            nethack.glyph_is_statue(vec),
+            np.isin(vec, [nethack.GLYPH_STATUE_OFF]),
+        )
+
+        # Test some non-offset value too.
+        assert nethack.glyph_is_warning(
+            (nethack.GLYPH_WARNING_OFF + nethack.GLYPH_STATUE_OFF) // 2
+        )
+
+    def test_glyph_to(self):
+        assert np.all(
+            nethack.glyph_to_mon(
+                np.array(
+                    [
+                        nethack.GLYPH_MON_OFF,
+                        nethack.GLYPH_PET_OFF,
+                        nethack.GLYPH_DETECT_OFF,
+                        nethack.GLYPH_RIDDEN_OFF,
+                        nethack.GLYPH_STATUE_OFF,
+                    ]
+                )
+            )
+            == 0
+        )
+
+        # STATUE and CORPSE from onames.h (generated by makedefs).
+        # Returned by glyph_to_obj.
+        corpse = get_object("corpse").oc_name_idx
+        statue = get_object("statue").oc_name_idx
+        np.testing.assert_array_equal(
+            nethack.glyph_to_obj(
+                np.array(
+                    [
+                        nethack.GLYPH_BODY_OFF,
+                        nethack.GLYPH_STATUE_OFF,
+                        nethack.GLYPH_OBJ_OFF,
+                    ]
+                )
+            ),
+            np.array([corpse, statue, 0]),
+        )
+
+        for idx in range(nethack.MAXPCHARS):  # Find the arrow trap.
+            if nethack.symdef.from_idx(idx).explanation == "arrow trap":
+                np.testing.assert_array_equal(
+                    nethack.glyph_to_trap(
+                        np.array([nethack.GLYPH_CMAP_OFF, nethack.GLYPH_CMAP_OFF + idx])
+                    ),
+                    # Traps are one-indexed in defsym_to_trap as per rm.h.
+                    np.array([nethack.NO_GLYPH, 1]),
+                )
+                break
+
+        np.testing.assert_array_equal(
+            nethack.glyph_to_cmap(
+                np.array(
+                    [
+                        nethack.GLYPH_CMAP_OFF,
+                        nethack.GLYPH_STATUE_OFF,
+                    ]
+                )
+            ),
+            np.array([0, nethack.NO_GLYPH]),
+        )
+
+        assert nethack.glyph_to_swallow(nethack.GLYPH_SWALLOW_OFF) == 0
+
+        np.testing.assert_array_equal(
+            nethack.glyph_to_warning(
+                np.arange(nethack.GLYPH_WARNING_OFF, nethack.GLYPH_STATUE_OFF)
+            ),
+            np.arange(nethack.WARNCOUNT),
+        )
 
 
 class TestNethackGlanceObservation:

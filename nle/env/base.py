@@ -1,6 +1,4 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-import collections
-import csv
 import enum
 import logging
 import os
@@ -167,30 +165,10 @@ class NLE(gym.Env):
         RUNNING = 0
         DEATH = 1
 
-    Stats = collections.namedtuple(
-        "Stats",
-        (
-            "end_status",
-            "score",
-            "time",
-            "steps",
-            "hp",
-            "exp",
-            "exp_lev",
-            "gold",
-            "hunger",
-            # "killer_name",
-            "deepest_lev",
-            "episode",
-            "seeds",
-            "ttyrec",
-        ),
-    )
-
     def __init__(
         self,
+        save_ttyrec_every=0,
         savedir=None,
-        archivefile=None,
         character="mon-hum-neu-mal",
         max_episode_steps=5000,
         observation_keys=(
@@ -214,16 +192,17 @@ class NLE(gym.Env):
         wizard=False,
         allow_all_yn_questions=False,
         allow_all_modes=False,
-        spawn_monsters=True,
-        episode_save_cycle=1,
+        spawn_monsters=True
     ):
         """Constructs a new NLE environment.
 
         Args:
-            savedir (str or None): path to save ttyrecs (game recordings) into.
-                Defaults to None, which doesn't save any data. Otherwise,
-                interpreted as a path to a new or existing directory.
-                If "" (empty string), NLE choses a unique directory name.
+            save_ttyrec_every: Integer, if 0, no ttyrecs (game recordings) will
+                be saved. Otherwise, save a ttyrec every Nth episode.
+            savedir (str or None): Path to save ttyrecs (game recordings) into,
+                if save_ttyrec_every is nonzero. If nonempty string, interpreted
+                as a path to a new or existing directory.
+                If "" (empty string) or None, NLE choses a unique directory name.
             character (str): name of character. Defaults to "mon-hum-neu-mal".
             max_episode_steps (int): maximum amount of steps allowed before the
                 game is forcefully quit. In such cases, ``info["end_status"]``
@@ -243,29 +222,24 @@ class NLE(gym.Env):
             allow_all_modes (bool):
                 If set to True, do not decline menus, text input or auto 'MORE'.
                 If set to False, only skip click through 'MORE' on death.
-            episode_save_cycle (int):
-                 number of episodes run before a game is saved to a ttyrec file.
-                 Default value of 1 will save a ttyrec file for every episode.
+            spawn_monsters: If False, disables normal NetHack behavior to randomly
+                create monsters.
         """
-        del archivefile  # TODO: Remove once we change the API.
-
         self.character = character
         self._max_episode_steps = max_episode_steps
         self._allow_all_yn_questions = allow_all_yn_questions
         self._allow_all_modes = allow_all_modes
-        self._episode_save_cycle = episode_save_cycle
+        self._save_ttyrec_every = save_ttyrec_every
 
         if actions is None:
             actions = FULL_ACTIONS
-        self._actions = actions
+        self.actions = actions
 
         self.last_observation = ()
 
         try:
-            if savedir is None:
+            if not save_ttyrec_every:
                 self.savedir = None
-                self._stats_file = None
-                self._stats_logger = None
             elif savedir:
                 self.savedir = os.path.abspath(savedir)
                 os.makedirs(self.savedir)
@@ -283,18 +257,12 @@ class NLE(gym.Env):
             else:
                 logger.info("Not saving any NLE data.")
 
-        # TODO: Fix stats_file logic.
-        # self._setup_statsfile = self.savedir is not None
-        self._setup_statsfile = False
-        self._stats_file = None
-        self._stats_logger = None
-
         self._observation_keys = list(observation_keys)
 
         if "internal" in self._observation_keys:
             logger.warn(
-                """The 'internal' NLE observation was requested.
-This might contain data that shouldn't be available to agents."""
+                "The 'internal' NLE observation was requested. "
+                "This might contain data that shouldn't be available to agents."
             )
 
         # Observations we always need.
@@ -320,22 +288,28 @@ This might contain data that shouldn't be available to agents."""
         )
 
         if self.savedir:
+            ttyrec_version = ".ttyrec%i.bz2" % nethack.TTYREC_VERSION
+            ttyrec_prefix = "nle.%i.%%i" % os.getpid()
             self._ttyrec_pattern = os.path.join(
-                self.savedir, "nle.%i.%%i.ttyrec.bz2" % os.getpid()
+                self.savedir, ttyrec_prefix + ttyrec_version
             )
             ttyrec = self._ttyrec_pattern % 0
+            # Create an xlogfile with the same format of name.
+            scoreprefix = ttyrec.replace("0" + ttyrec_version, "")
         else:
             ttyrec = None
+            scoreprefix = None
 
-        self.env = nethack.Nethack(
+        self.nethack = nethack.Nethack(
             observation_keys=self._observation_keys,
             options=options,
             playername="Agent-" + self.character,
             ttyrec=ttyrec,
             wizard=wizard,
             spawn_monsters=spawn_monsters,
+            scoreprefix=scoreprefix,
         )
-        self._close_env = weakref.finalize(self, self.env.close)
+        self._close_nethack = weakref.finalize(self, self.nethack.close)
 
         self._random = random.SystemRandom()
 
@@ -347,7 +321,7 @@ This might contain data that shouldn't be available to agents."""
             {key: space_dict[key] for key in observation_keys}
         )
 
-        self.action_space = gym.spaces.Discrete(len(self._actions))
+        self.action_space = gym.spaces.Discrete(len(self.actions))
 
     def _get_observation(self, observation):
         return {
@@ -356,7 +330,7 @@ This might contain data that shouldn't be available to agents."""
         }
 
     def print_action_meanings(self):
-        for a_idx, a in enumerate(self._actions):
+        for a_idx, a in enumerate(self.actions):
             print(a_idx, a)
 
     def _check_abort(self, observation):
@@ -382,7 +356,7 @@ This might contain data that shouldn't be available to agents."""
         # Careful: By default we re-use Numpy arrays, so copy before!
         last_observation = tuple(a.copy() for a in self.last_observation)
 
-        observation, done = self.env.step(self._actions[action])
+        observation, done = self.nethack.step(self.actions[action])
         is_game_over = observation[self._program_state_index][0] == 1
         if is_game_over or not self._allow_all_modes:
             observation, done = self._perform_known_steps(
@@ -409,41 +383,10 @@ This might contain data that shouldn't be available to agents."""
             done = True
 
         info = {}
-        # TODO: fix stats
-        # if end_status:
-        #     # stats = self._collect_stats(last_observation, end_status)
-        #     # stats = stats._asdict()
-        #     # stats = {}
-        #     # info["stats"] = stats
-        #
-        #    # if self._stats_logger is not None:
-        #     #     self._stats_logger.writerow(stats)
-
         info["end_status"] = end_status
-        info["is_ascended"] = self.env.how_done() == nethack.ASCENDED
+        info["is_ascended"] = self.nethack.how_done() == nethack.ASCENDED
 
         return self._get_observation(observation), reward, done, info
-
-    def _collect_stats(self, message, end_status):
-        """Updates a stats dict tracking several env stats."""
-        # Using class rather than instance to allow tasks to reuse this with
-        # super()
-        # return NLE.Stats(
-        #     end_status=int(end_status),
-        #     score=_get(message, "Blstats.score", required=True),
-        #     time=_get(message, "Blstats.time", required=True),
-        #     steps=self._steps,
-        #     hp=_get(message, "Blstats.hitpoints", required=True),
-        #     exp=_get(message, "Blstats.experience_points", required=True),
-        #     exp_lev=_get(message, "Blstats.experience_level", required=True),
-        #     gold=_get(message, "Blstats.gold", required=True),
-        #     hunger=_get(message, "You.uhunger", required=True),
-        #     # killer_name=self._killer_name,
-        #     deepest_lev=_get(message, "Internal.deepest_lev_reached", required=True),
-        #     episode=self._episode,
-        #     seeds=self.get_seeds(),
-        #     ttyrec=self.env._process.filename,
-        # )
 
     def _in_moveloop(self, observation):
         program_state = observation[self._program_state_index]
@@ -462,28 +405,13 @@ This might contain data that shouldn't be available to agents."""
                 `self.observation_space`.
         """
         self._episode += 1
-        new_ttyrec = self._ttyrec_pattern % self._episode if self.savedir else None
-        if self._episode % self._episode_save_cycle == 0:
-            self.last_observation = self.env.reset(
-                new_ttyrec, wizkit_items=wizkit_items
-            )
+        if self.savedir and self._episode % self._save_ttyrec_every == 0:
+            new_ttyrec = self._ttyrec_pattern % self._episode
         else:
-            self.last_observation = self.env.reset(None, wizkit_items=wizkit_items)
-
-        # Only run on the first reset to initialize stats file
-        if self._setup_statsfile:
-            filename = os.path.join(self.savedir, "stats.csv")
-            add_header = not os.path.exists(filename)
-
-            self._stats_file = open(filename, "a", 1)  # line buffered.
-            self._stats_logger = csv.DictWriter(
-                self._stats_file, fieldnames=self.Stats._fields
-            )
-            if add_header:
-                self._stats_logger.writeheader()
-        self._setup_statsfile = False
-
-        # self._killer_name = "UNK"
+            new_ttyrec = None
+        self.last_observation = self.nethack.reset(
+            new_ttyrec, wizkit_items=wizkit_items
+        )
 
         self._steps = 0
 
@@ -496,7 +424,7 @@ This might contain data that shouldn't be available to agents."""
             # monster at the 0th turn and gets asked to name it.
             # Hence the defensive iteration above.
             # TODO: Detect this 'in_getlin' situation and handle it.
-            self.last_observation, done = self.env.step(ASCII_SPACE)
+            self.last_observation, done = self.nethack.step(ASCII_SPACE)
             assert not done, "Game ended unexpectedly"
         else:
             warnings.warn(
@@ -507,7 +435,7 @@ This might contain data that shouldn't be available to agents."""
         return self._get_observation(self.last_observation)
 
     def close(self):
-        self._close_env()
+        self._close_nethack()
         super().close()
 
     def seed(self, core=None, disp=None, reseed=False):
@@ -536,7 +464,7 @@ This might contain data that shouldn't be available to agents."""
             core = self._random.randrange(sys.maxsize)
         if disp is None:
             disp = self._random.randrange(sys.maxsize)
-        self.env.set_initial_seeds(core, disp, reseed)
+        self.nethack.set_initial_seeds(core, disp, reseed)
         return (core, disp, reseed)
 
     def get_seeds(self):
@@ -545,7 +473,7 @@ This might contain data that shouldn't be available to agents."""
         Returns:
             (tuple): Current NetHack (core, disp, reseed) state.
         """
-        return self.env.get_current_seeds()
+        return self.nethack.get_current_seeds()
 
     def render(self, mode="human"):
         """Renders the state of the environment."""
@@ -605,8 +533,8 @@ This might contain data that shouldn't be available to agents."""
 
     def _reward_fn(self, last_observation, action, observation, end_status):
         """Reward function. Difference between previous score and new score."""
-        if not self.env.in_normal_game():
-            # Before game started or after it ended stats are zero.
+        if not self.nethack.in_normal_game():
+            # Before game started and after it ended blstats are zero.
             return 0.0
         old_score = last_observation[self._blstats_index][nethack.NLE_BL_SCORE]
         score = observation[self._blstats_index][nethack.NLE_BL_SCORE]
@@ -617,18 +545,15 @@ This might contain data that shouldn't be available to agents."""
     def _perform_known_steps(self, observation, done, exceptions=True):
         while not done:
             if observation[self._internal_index][3]:  # xwaitforspace
-                observation, done = self.env.step(ASCII_SPACE)
+                observation, done = self.nethack.step(ASCII_SPACE)
                 continue
-
-            # TODO: Think about killer_name.
-            # if self._killer_name == "UNK"
 
             internal = observation[self._internal_index]
             in_yn_function = internal[1]
             in_getlin = internal[2]
 
             if in_getlin:  # Game asking for a line of text. We don't do that.
-                observation, done = self.env.step(ASCII_ESC)
+                observation, done = self.nethack.step(ASCII_ESC)
                 continue
 
             if in_yn_function:  # Game asking for a single character.
@@ -646,7 +571,7 @@ This might contain data that shouldn't be available to agents."""
                         break
 
                 # Otherwise, auto-decline.
-                observation, done = self.env.step(ASCII_ESC)
+                observation, done = self.nethack.step(ASCII_ESC)
 
             break
 
@@ -665,7 +590,7 @@ This might contain data that shouldn't be available to agents."""
         # Quit the game.
         actions = [0x80 | ord("q"), ord("y")]  # M-q y
         for a in actions:
-            observation, done = self.env.step(a)
+            observation, done = self.nethack.step(a)
 
         # Answer final questions.
         observation, done = self._perform_known_steps(

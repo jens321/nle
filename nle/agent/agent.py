@@ -73,8 +73,9 @@ parser.add_argument("--disable_cuda", action="store_true",
                     help="Disable CUDA.")
 parser.add_argument("--use_lstm", action="store_true",
                     help="Use LSTM in agent model.")
-parser.add_argument("--episode_save_cycle", default=1, type=int,
-                     metavar="N", help="Cycle of episodes to save ttyrec.")
+parser.add_argument("--save_ttyrec_every", default=1000, type=int,
+                    metavar="N", help="Save ttyrec every N episodes.")
+
 
 # Loss settings.
 parser.add_argument("--entropy_cost", default=0.0006,
@@ -119,7 +120,7 @@ def nested_map(f, n):
 
 
 def compute_baseline_loss(advantages):
-    return 0.5 * torch.sum(advantages ** 2)
+    return 0.5 * torch.sum(advantages**2)
 
 
 def compute_entropy_loss(logits):
@@ -156,7 +157,7 @@ def act(
         logging.info("Actor %i started.", actor_index)
 
         gym_env = create_env(
-             flags.env, savedir=flags.rundir, episode_save_cycle=flags.episode_save_cycle
+            flags.env, savedir=flags.rundir, save_ttyrec_every=flags.save_ttyrec_every
         )
         env = ResettingEnvironment(gym_env)
         env_output = env.initial()
@@ -595,7 +596,7 @@ def test(flags, num_episodes=10):
     flags.savedir = os.path.expandvars(os.path.expanduser(flags.savedir))
     checkpointpath = os.path.join(flags.savedir, "latest", "model.tar")
 
-    gym_env = create_env(flags.env, episode_save_cycle=flags.episode_save_cycle)
+    gym_env = create_env(flags.env, save_ttyrec_every=flags.save_ttyrec_every)
     env = ResettingEnvironment(gym_env)
     model = Net(gym_env.observation_space, gym_env.action_space.n, flags.use_lstm)
     model.eval()
@@ -795,7 +796,7 @@ class NetHackNet(nn.Module):
         out_dim += self.H * self.W * Y
 
         # CNN crop model.
-        out_dim += self.crop_dim ** 2 * Y
+        out_dim += self.crop_dim**2 * Y
 
         self.embed_blstats = nn.Sequential(
             nn.Linear(self.blstats_size, self.k_dim),

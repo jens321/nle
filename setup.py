@@ -80,6 +80,7 @@ class CMakeBuild(build_ext.build_ext):
 
 packages = [
     "nle",
+    "nle.dataset",
     "nle.env",
     "nle.nethack",
     "nle.agent",
@@ -105,8 +106,9 @@ extras_deps = {
         "cmake_format>=0.6.10",
         "flake8>=3.7",
         "flake8-bugbear>=20.1",
-        "pytest>=5.3",
-        "pytest-benchmark>=3.1.0",
+        "memory-profiler>=0.60.0",
+        "pytest>=6.2.5",
+        "pytest-benchmark>=3.4.1",
         "sphinx>=2.4.4",
         "sphinx-rtd-theme==0.4.3",
     ],
@@ -160,7 +162,7 @@ if __name__ == "__main__":
         ext_modules=[setuptools.Extension("nle", sources=[])],
         cmdclass={"build_ext": CMakeBuild},
         setup_requires=["pybind11>=2.2"],
-        install_requires=["pybind11>=2.2", "numpy>=1.16", "gym>=0.15"],
+        install_requires=["pybind11>=2.2", "numpy>=1.16", "gym>=0.15,<=0.23"],
         extras_require=extras_deps,
         python_requires=">=3.5",
         classifiers=[

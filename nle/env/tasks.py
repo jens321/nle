@@ -69,9 +69,9 @@ class NetHackScore(base.NLE):
             if self._frozen_steps > 0:
                 penalty += self.penalty_step
         elif self.penalty_mode == "exp":
-            penalty += 2 ** self._frozen_steps * self.penalty_step
+            penalty += 2**self._frozen_steps * self.penalty_step
         elif self.penalty_mode == "square":
-            penalty += self._frozen_steps ** 2 * self.penalty_step
+            penalty += self._frozen_steps**2 * self.penalty_step
         elif self.penalty_mode == "linear":
             penalty += self._frozen_steps * self.penalty_step
         elif self.penalty_mode == "always":
@@ -137,11 +137,9 @@ class NetHackStaircasePet(NetHackStaircase):
             blstats = observation[self._blstats_index]
             x, y = blstats[:2]
 
-            neighbors = glyphs[y - 1 : y + 2, x - 1 : x + 2].reshape(-1).tolist()
-            # TODO: vectorize
-            for glyph in neighbors:
-                if nethack.glyph_is_pet(glyph):
-                    return self.StepStatus.TASK_SUCCESSFUL
+            neighbors = glyphs[y - 1 : y + 2, x - 1 : x + 2]
+            if np.any(nethack.glyph_is_pet(neighbors)):
+                return self.StepStatus.TASK_SUCCESSFUL
         return self.StepStatus.RUNNING
 
 
@@ -200,8 +198,8 @@ class NetHackGold(NetHackScore):
         """Difference between previous gold and new gold."""
         del end_status  # Unused
         del action  # Unused
-        if not self.env.in_normal_game():
-            # Before game started or after it ended stats are zero.
+        if not self.nethack.in_normal_game():
+            # Before game started and after it ended blstats are zero.
             return 0.0
 
         old_blstats = last_observation[self._blstats_index]
@@ -232,8 +230,8 @@ class NetHackEat(NetHackScore):
         del end_status  # Unused
         del action  # Unused
 
-        if not self.env.in_normal_game():
-            # Before game started or after it ended stats are zero.
+        if not self.nethack.in_normal_game():
+            # Before game started and after it ended blstats are zero.
             return 0.0
 
         old_internal = last_observation[self._internal_index]
@@ -264,8 +262,8 @@ class NetHackScout(NetHackScore):
         del end_status  # Unused
         del action  # Unused
 
-        if not self.env.in_normal_game():
-            # Before game started or after it ended stats are zero.
+        if not self.nethack.in_normal_game():
+            # Before game started and after it ended blstats are zero.
             return 0.0
 
         reward = 0
@@ -346,9 +344,9 @@ class NetHackChallenge(NetHackScore):
         def f(*args, **kwargs):
             raise RuntimeError("Should not try changing seeds")
 
-        self.env.set_initial_seeds = f
-        self.env.set_current_seeds = f
-        self.env.get_current_seeds = f
+        self.nethack.set_initial_seeds = f
+        self.nethack.set_current_seeds = f
+        self.nethack.get_current_seeds = f
 
     def reset(self, *args, **kwargs):
         self._turns = None

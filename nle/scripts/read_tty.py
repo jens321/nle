@@ -1,9 +1,13 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 import argparse
+import atexit
 import datetime
 import os
 import re
+import signal
 import struct
+import subprocess
+import sys
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -26,6 +30,12 @@ parser.add_argument(
 parser.add_argument(
     "filename", default="", type=str, nargs="?", help="tty record file, or - for stdin"
 )
+parser.add_argument(
+    "--no_pager",
+    dest="use_pager",
+    action="store_false",
+    help="Don't pipe data to less",
+)
 
 
 def ttyframes(f, tty2=True):
@@ -47,7 +57,7 @@ def ttyframes(f, tty2=True):
             sec, usec, length = struct.unpack("<iii", header)
             channel = 0
 
-        if sec < 0 or usec < 0 or length < 0 or channel not in (0, 1):
+        if sec < 0 or usec < 0 or length < 0 or channel not in (0, 1, 2):
             raise IOError("Illegal header %s in %s" % ((sec, usec, length, channel), f))
         timestamp = sec + usec * 1e-6
 
@@ -84,7 +94,7 @@ DEC_DATA_COLOR = 3  # Dark yellow.
 FRAMECNT_COLOR = 2  # Dark green.
 TIMESTAMP_COLOR = 7  # "Normal" color.
 CHANNEL_COLOR = 2  # Dark green.
-BRACES_COLOR = [11, 4]  # Output: Bright yellow, input: dark blue.
+BRACES_COLOR = [11, 4, 5]  # Output: Bright yellow, input: dark blue, score: pink
 
 
 # "Select Graphic Rendition" sequence.
@@ -151,7 +161,10 @@ def main():
         parser.print_help()
         return
 
-    frames = [0, 0]
+    if FLAGS.use_pager:
+        setup_pager()
+
+    frames = [0, 0, 0]
     with getfile(FLAGS.filename) as f:
         for timestamp, channel, data in ttyframes(f, tty2=not FLAGS.no_input):
             frames[channel] += 1
@@ -168,6 +181,10 @@ def main():
                 char, *_ = struct.unpack("<B", data)
                 data = chr(char).encode("ascii", "backslashreplace")
                 arrow = "->"
+            elif channel == 2:
+                score, *_ = struct.unpack("<i", data)
+                data = f"  {score} "
+                arrow = "->"
 
             data = str(data)[2:-1]  # Strip b' and '
 
@@ -178,23 +195,62 @@ def main():
             if FLAGS.unicode_csi:
                 data = re.sub(CSI_REGEX, CSI_UNICODE, data)
 
-            try:
-                print(
-                    "%s %s %s%s%s%s"
-                    % (
-                        color(str(frames), FRAMECNT_COLOR),
-                        color(
-                            datetime.datetime.fromtimestamp(timestamp), TIMESTAMP_COLOR
-                        ),
-                        color(arrow, CHANNEL_COLOR),
-                        color("{", BRACES_COLOR[channel]),
-                        data,
-                        color("}", BRACES_COLOR[channel]),
-                    )
+            print(
+                "%s %s %s%s%s%s"
+                % (
+                    color(str(frames), FRAMECNT_COLOR),
+                    color(datetime.datetime.fromtimestamp(timestamp), TIMESTAMP_COLOR),
+                    color(arrow, CHANNEL_COLOR),
+                    color("{", BRACES_COLOR[channel]),
+                    data,
+                    color("}", BRACES_COLOR[channel]),
                 )
-            except BrokenPipeError:  # E.g., read_tty.py ... | less -R, quit.
-                # Python flushes stdout on exit, but stdout is gone. Just leave.
-                os._exit(1)
+            )
+
+
+def setup_pager():
+    """Pager logic. Compare pager.c in git."""
+    if not os.isatty(1):
+        return
+
+    pager_env = os.environ.copy()
+    pager_env["LESS"] = "FRX"
+    pager = subprocess.Popen(["less"], bufsize=0, stdin=subprocess.PIPE, env=pager_env)
+    os.dup2(pager.stdin.fileno(), 1)
+    if os.isatty(2):
+        os.dup2(pager.stdin.fileno(), 2)
+    pager.stdin.close()
+
+    def close_pager_fds():
+        os.close(1)
+        os.close(2)
+
+    def wait_for_pager_atexit():
+        sys.stdout.flush()
+        sys.stderr.flush()
+        close_pager_fds()
+        pager.wait()
+
+    signos = (
+        signal.SIGINT,
+        signal.SIGHUP,
+        signal.SIGTERM,
+        signal.SIGQUIT,
+        signal.SIGPIPE,
+    )
+
+    handlers = {signo: signal.getsignal(signo) for signo in signos}
+
+    def wait_for_pager_signal(signo, frame):
+        close_pager_fds()
+        pager.wait()
+        for signo, handler in handlers.items():
+            signal.signal(signo, handler)
+        signal.raise_signal(signo)
+
+    for signo in signos:
+        signal.signal(signo, wait_for_pager_signal)
+    atexit.register(wait_for_pager_atexit)
 
 
 if __name__ == "__main__":

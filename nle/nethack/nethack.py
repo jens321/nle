@@ -68,6 +68,7 @@ NETHACKOPTIONS = (
 )
 
 HACKDIR = pkg_resources.resource_filename("nle", "nethackdir")
+TTYREC_VERSION = 3
 
 
 def _new_dl_linux(vardir):
@@ -153,12 +154,13 @@ class Nethack:
         self,
         observation_keys=OBSERVATION_DESC.keys(),
         playername="Agent-mon-hum-neu-mal",
-        ttyrec="nle.ttyrec.bz2",
+        ttyrec="nle.ttyrec%i.bz2" % TTYREC_VERSION,
         options=None,
         copy=False,
         wizard=False,
         hackdir=HACKDIR,
         spawn_monsters=True,
+        scoreprefix="",
     ):
         self._copy = copy
 
@@ -175,9 +177,15 @@ class Nethack:
 
         # Symlink a nhdat.
         os.symlink(os.path.join(hackdir, "nhdat"), os.path.join(self._vardir, "nhdat"))
-        # Touch a few files.
-        for fn in ["perm", "record", "logfile", "xlogfile"]:
+
+        # Touch files, so lock_file() in files.c passes.
+        for fn in ["perm", "record", "logfile"]:
             os.close(os.open(os.path.join(self._vardir, fn), os.O_CREAT))
+        if scoreprefix:
+            os.close(os.open(scoreprefix + "xlogfile", os.O_CREAT))
+        else:
+            os.close(os.open(os.path.join(self._vardir, "xlogfile"), os.O_CREAT))
+
         os.mkdir(os.path.join(self._vardir, "save"))
 
         # An assortment of hacks:
@@ -191,18 +199,30 @@ class Nethack:
 
         if options is None:
             options = NETHACKOPTIONS
-        self._options = list(options) + ["name:" + playername]
+        self.options = list(options) + ["name:" + playername]
+        if playername.split("-", 1)[1:] == ["@"]:
+            # Random role. Unless otherwise specified, randomize
+            # race/gender/alignment too.
+            for key in ("race", "gender", "align"):
+                if not any(o for o in options if o.startswith(key + ":")):
+                    self.options.append("%s:random" % key)
+
         if wizard:
-            self._options.append("playmode:debug")
+            self.options.append("playmode:debug")
         self._wizard = wizard
-        self._nethackoptions = ",".join(self._options)
+        self._nethackoptions = ",".join(self.options)
         if ttyrec is None:
             self._pynethack = _pynethack.Nethack(
                 self.dlpath, self._vardir, self._nethackoptions, spawn_monsters
             )
         else:
             self._pynethack = _pynethack.Nethack(
-                self.dlpath, ttyrec, self._vardir, self._nethackoptions, spawn_monsters
+                self.dlpath,
+                ttyrec,
+                self._vardir,
+                self._nethackoptions,
+                spawn_monsters,
+                scoreprefix,
             )
         self._ttyrec = ttyrec
 

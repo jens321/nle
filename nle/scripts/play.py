@@ -60,7 +60,7 @@ def get_action(env, is_raw_env):
                 if is_raw_env:
                     action = ch
                 else:
-                    action = env._actions.index(ch)
+                    action = env.actions.index(ch)
                 break
             except ValueError:
                 print(
@@ -86,6 +86,7 @@ def play():
     else:
         env = gym.make(
             FLAGS.env,
+            save_ttyrec_every=2,
             savedir=FLAGS.savedir,
             max_episode_steps=FLAGS.max_steps,
             allow_all_yn_questions=True,
@@ -113,7 +114,7 @@ def play():
             if not is_raw_env:
                 print("-" * 8 + " " * 71)
                 print(f"Previous reward: {str(reward):64s}")
-                act_str = repr(env._actions[action]) if action is not None else ""
+                act_str = repr(env.actions[action]) if action is not None else ""
                 print(f"Previous action: {str(act_str):64s}")
                 print("-" * 8)
                 env.render(FLAGS.render_mode)

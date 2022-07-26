@@ -134,7 +134,7 @@ init_nle(FILE *ttyrec, nle_obs *obs)
 
     nle->observation = obs;
 
-    TMT *vterminal = tmt_open(LI, CO, nle_vt_callback, nle, NULL);
+    TMT *vterminal = tmt_open(LI, CO, nle_vt_callback, nle, NULL, true);
     assert(vterminal);
     nle->vterminal = vterminal;
 
@@ -176,13 +176,16 @@ mainloop(fcontext_transfer_t ctx_transfer)
         settings.hackdir[len] = '\0';
     }
 
+    char *scoreprefix = (settings.scoreprefix[0] != '\0')
+                            ? settings.scoreprefix
+                            : settings.hackdir;
     fqn_prefix[SYSCONFPREFIX] = settings.hackdir;
     fqn_prefix[CONFIGPREFIX] = settings.hackdir;
     fqn_prefix[HACKPREFIX] = settings.hackdir;
     fqn_prefix[SAVEPREFIX] = settings.hackdir;
     fqn_prefix[LEVELPREFIX] = settings.hackdir;
     fqn_prefix[BONESPREFIX] = settings.hackdir;
-    fqn_prefix[SCOREPREFIX] = settings.hackdir;
+    fqn_prefix[SCOREPREFIX] = scoreprefix;
     fqn_prefix[LOCKPREFIX] = settings.hackdir;
     fqn_prefix[TROUBLEPREFIX] = settings.hackdir;
     fqn_prefix[DATAPREFIX] = settings.hackdir;
@@ -349,6 +352,12 @@ nle_done(int how)
     nle->observation->how_done = how;
 }
 
+char *
+nle_ttyrecname()
+{
+    return settings.ttyrecname;
+}
+
 int
 nle_spawn_monsters()
 {
@@ -432,6 +441,16 @@ nle_start(nle_obs *obs, FILE *ttyrec, nle_seeds_init_t *seed_init,
     nle_seeds_init =
         NULL; /* Don't set to *these* seeds on subsequent reseeds, if any. */
 
+    if (nle->ttyrec) {
+        if (obs->blstats) {
+            /* See comment in `nle_step`. We record the score in line with
+             * the state to ensure s,r -> a -> s', r'. These lines ensure
+             * we don't skip the first reward. */
+            write_ttyrec_header(4, 2);
+            write_ttyrec_data(&obs->blstats[9], 4);
+        }
+    }
+
     return nle;
 }
 
@@ -448,6 +467,30 @@ nle_step(nle_ctx_t *nle, nle_obs *obs)
     nle->generatorcontext = t.ctx;
     nle->done = (t.data == NULL);
     obs->done = nle->done;
+
+    if (nle->ttyrec) {
+        /* NLE ttyrec version 3 stores the action and in-game score in
+         * different channels of the ttyrec. These channels are:
+         *  - 0: the terminal instructions (classic ttyrec)
+         *  - 1: the keypress/action (1 byte)
+         *  - 2: the in-game score (4 bytes)
+         *
+         * We could either the note the in-game score every time we flush the
+         * terminal instructions to screen, (eg writing [ 0 2 0 2 <step> 1 0 2
+         * <step> 1 ]) or we can note it _just_ before resuming the game,
+         * assuming no chicanery has happened to the score after it is written
+         * to the array `blstats`, (eg writing [ 0 2 <step> 1 0 2 <step> 1 0 2
+         * <step> ]). We chose the latter for compression & simplicity
+         * reasons.
+         *
+         * Note: blstats[9] == botl_score which is used for score/reward fns.
+         * see winrl.cc
+         */
+        if (obs->blstats) {
+            write_ttyrec_header(4, 2);
+            write_ttyrec_data(&obs->blstats[9], 4);
+        }
+    }
 
     return nle;
 }
