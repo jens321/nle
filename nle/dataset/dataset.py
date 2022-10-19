@@ -172,6 +172,7 @@ def _ttyrec_generator(
                 chars,
                 colors,
                 cursors,
+                blstats,
                 timestamps,
                 actions,
                 scores,

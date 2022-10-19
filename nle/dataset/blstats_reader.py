@@ -15,7 +15,7 @@ class BlstatsReader():
         input_len = blstats.shape[0]
         end_cursor = self.data.shape[0]
         to_read = min(input_len, end_cursor - self.cursor)
-        blstats.copy_(self.data[self.cursor:self.cursor + to_read])
+        np.copyto(blstats[:to_read], self.data[self.cursor:self.cursor + to_read])
         self.cursor += to_read
 
     def load(self, gameid: int):
