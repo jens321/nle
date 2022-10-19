@@ -103,7 +103,7 @@ def read_header(f, peek=False, no_input=False):
         else:
             sec, usec, length, channel = struct.unpack("<iiiB", header)
 
-        if sec < 0 or usec < 0 or length < 1 or channel not in (0, 1):
+        if sec < 0 or usec < 0 or length < 1 or channel not in (0, 1, 2):
             raise IOError("Illegal header %s" % ((sec, usec, length, channel),))
         timestamp = sec + usec * 1e-6
         yield timestamp, length, channel
@@ -124,7 +124,7 @@ def process(f):
     clrscreen = []
 
     lastpos = 0
-    frame = [0, 0]  # Input and output frame.
+    frame = [0, 0, 0]  # Input and output frame.
     for timestamp, length, channel in read_header(
         f, peek=FLAGS.peek, no_input=FLAGS.no_input
     ):
@@ -169,11 +169,13 @@ def process(f):
             os.write(1, data)
         elif channel == 1 and FLAGS.print_inputs:  # Input.
             os.write(
-                1, b"\033[s\033[26;0f\033[37;1mFrame %d+%d:\033[0m " % tuple(frame)
+                1, b"\033[s\033[26;0f\033[37;1mFrame %d+%d+%d:\033[0m " % tuple(frame)
             )  # Save Cursor & Jump to L26
             os.write(1, INPUTS[ord(data)].encode("ascii", "backslashreplace"))
             os.write(1, b" " * 32)
             os.write(1, b" \033[u")  # Jump back Cursor
+            # if ord(data) == 105 or ord(data) == 73:
+            #     input()
 
         if frame[0] > FLAGS.end:
             return
