@@ -8,13 +8,43 @@ import numpy as np
 
 from nle import _pyconverter as converter
 from nle import dataset as nld
+from nle import nethack
+from nle.dataset.blstats_reader import BlstatsReader
 
+def extract_dlvls(tty_chars: np.array, init_dungeon_levels: np.array, done: np.array):
+    B, T, *_ = tty_chars.shape
+    last_lines = tty_chars[..., -1, :]
+    dungeon_levels = np.zeros((B, T))
+    for t in range(T):
+        for b in range(B):
+            # update init_dungeon_levels if necessary
+            if done[b][t]:
+                init_dungeon_levels[b] = 1
+
+            match_phrase = last_lines[b][t][:7].tolist()
+            match_phrase = "".join([chr(int(char)) for char in match_phrase])
+            if not match_phrase.startswith('Dlvl:') and t > 0:
+                dungeon_levels[b][t] = dungeon_levels[b][t - 1]
+            elif not match_phrase.startswith('Dlvl:') and t == 0:
+                dungeon_levels[b][t] = init_dungeon_levels[b]
+            else:
+                try:
+                    lvl = int(match_phrase.split(':')[-1].strip())
+                except:
+                    # some parsing error due to occluded number, just default to previous dlvl
+                    lvl = dungeon_levels[b][t - 1] if t > 0 else init_dungeon_levels[b]
+                dungeon_levels[b][t] = lvl
+
+    init_dungeon_levels = np.copy(dungeon_levels[:, -1])
+    return dungeon_levels, init_dungeon_levels
 
 def convert_frames(
     converter,
+    blstats_reader,
     chars,
     colors,
     curs,
+    blstats,
     timestamps,
     actions,
     scores,
@@ -39,10 +69,13 @@ def convert_frames(
 
     """
 
+    T = np.shape(chars)[0]
     resets[0] = 0
     while True:
         remaining = converter.convert(chars, colors, curs, timestamps, actions, scores)
-        end = np.shape(chars)[0] - remaining
+        end = T - remaining
+
+        blstats_reader.read(blstats)
 
         resets[1:end] = 0
         gameids[:end] = converter.gameid
@@ -52,6 +85,7 @@ def convert_frames(
         # There still space in the buffers; load a new ttyrec and carry on.
         chars = chars[-remaining:]
         colors = colors[-remaining:]
+        blstats = blstats[-remaining:]
         curs = curs[-remaining:]
         timestamps = timestamps[-remaining:]
         actions = actions[-remaining:]
@@ -61,9 +95,11 @@ def convert_frames(
         if load_fn(converter):
             if converter.part == 0:
                 resets[0] = 1
+                blstats_reader.load(converter.gameid)
         else:
             chars.fill(0)
             colors.fill(0)
+            blstats.fill(0)
             curs.fill(0)
             timestamps.fill(0)
             actions.fill(0)
@@ -74,7 +110,7 @@ def convert_frames(
 
 
 def _ttyrec_generator(
-    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version
+    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version, max_dungeon_level=None, dataset_name=None
 ):
     """A generator to fill minibatches with ttyrecs.
 
@@ -92,6 +128,10 @@ def _ttyrec_generator(
     resets = np.zeros((batch_size, seq_length), dtype=np.uint8)
     gameids = np.zeros((batch_size, seq_length), dtype=np.int32)
     scores = np.zeros((batch_size, seq_length), dtype=np.int32)
+    blstats = np.zeros((batch_size, seq_length, nethack.NLE_BLSTATS_SIZE), dtype=np.int32)
+
+    if max_dungeon_level is not None:
+        init_dungeon_levels = np.ones((batch_size, 1), dtype=np.int32)
 
     key_vals = [
         ("tty_chars", chars),
@@ -100,6 +140,7 @@ def _ttyrec_generator(
         ("timestamps", timestamps),
         ("done", resets),
         ("gameids", gameids),
+        ("blstats", blstats)
     ]
     if ttyrec_version >= 2:
         key_vals.append(("keypresses", actions))
@@ -112,6 +153,11 @@ def _ttyrec_generator(
     ]
     assert all(load_fn(c) for c in converters), "Not enough ttyrecs to fill a batch!"
 
+    # Setup blstats readers
+    blstats_readers = [
+        BlstatsReader(c.gameid, dataset_name) for c in converters
+    ]
+
     # Convert (at least one minibatch)
     _convert_frames = partial(convert_frames, load_fn=load_fn)
     gameids[0, -1] = 1  # basically creating a "do-while" loop by setting an indicator
@@ -122,6 +168,7 @@ def _ttyrec_generator(
             map_fn(
                 _convert_frames,
                 converters,
+                blstats_readers,
                 chars,
                 colors,
                 cursors,
@@ -134,6 +181,15 @@ def _ttyrec_generator(
         )
 
         yield dict(key_vals)
+
+        # extract dungeon levels
+        if max_dungeon_level is not None:
+            dlvls, init_dungeon_levels = extract_dlvls(chars, init_dungeon_levels, resets)
+            last_dlvls = dlvls[:, -1, ...]
+            for idx, (c, last_dlvl) in enumerate(zip(converters, last_dlvls)):
+                if last_dlvl > max_dungeon_level:
+                    load_fn(c, True)
+                    init_dungeon_levels[idx] = 1
 
 
 class TtyrecDataset:
@@ -155,6 +211,7 @@ class TtyrecDataset:
         loop_forever=False,
         subselect_sql=None,
         subselect_sql_args=None,
+        max_dungeon_level=None
     ):
         """
         An iterable dataset to load minibatches of NetHack games from compressed
@@ -204,6 +261,8 @@ class TtyrecDataset:
         self.shuffle = shuffle
         self.subselect_sql = subselect_sql
         self.loop_forever = loop_forever
+        self.max_dungeon_level = max_dungeon_level
+        self.dataset_name = dataset_name
 
         sql_args = (dataset_name,)
         core_sql = """
@@ -292,14 +351,14 @@ class TtyrecDataset:
         lock = threading.Lock()
         count = [0]
 
-        def _load_fn(converter):
+        def _load_fn(converter, move_game=False):
             """Take the next part of the current game if available, else new game.
             Return True if load successful, else False."""
             gameid = converter.gameid
             part = converter.part + 1
 
             files = self.get_paths(gameid)
-            if gameid == 0 or part >= len(files):
+            if gameid == 0 or part >= len(files) or move_game:
                 with lock:
                     i = count[0]
                     count[0] += 1
@@ -331,6 +390,8 @@ class TtyrecDataset:
             self._make_load_fn(gameids),
             self._map,
             self._ttyrec_version,
+            self.max_dungeon_level,
+            self.dataset_name
         )
 
     def get_ttyrecs(self, gameids, chunk_size=None):

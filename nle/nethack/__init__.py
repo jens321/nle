@@ -13,4 +13,5 @@ from nle.nethack.nethack import (
     OBSERVATION_DESC,
     TTYREC_VERSION,
     tty_render,
+    TERMINAL_SHAPE
 )
