@@ -11,33 +11,6 @@ from nle import dataset as nld
 from nle import nethack
 from nle.dataset.blstats_reader import BlstatsReader
 
-def extract_dlvls(tty_chars: np.array, init_dungeon_levels: np.array, done: np.array):
-    B, T, *_ = tty_chars.shape
-    last_lines = tty_chars[..., -1, :]
-    dungeon_levels = np.zeros((B, T))
-    for t in range(T):
-        for b in range(B):
-            # update init_dungeon_levels if necessary
-            if done[b][t]:
-                init_dungeon_levels[b] = 1
-
-            match_phrase = last_lines[b][t][:7].tolist()
-            match_phrase = "".join([chr(int(char)) for char in match_phrase])
-            if not match_phrase.startswith('Dlvl:') and t > 0:
-                dungeon_levels[b][t] = dungeon_levels[b][t - 1]
-            elif not match_phrase.startswith('Dlvl:') and t == 0:
-                dungeon_levels[b][t] = init_dungeon_levels[b]
-            else:
-                try:
-                    lvl = int(match_phrase.split(':')[-1].strip())
-                except:
-                    # some parsing error due to occluded number, just default to previous dlvl
-                    lvl = dungeon_levels[b][t - 1] if t > 0 else init_dungeon_levels[b]
-                dungeon_levels[b][t] = lvl
-
-    init_dungeon_levels = np.copy(dungeon_levels[:, -1])
-    return dungeon_levels, init_dungeon_levels
-
 def convert_frames(
     converter,
     blstats_reader,
@@ -68,12 +41,10 @@ def convert_frames(
         sig: load_fn(converter) -> bool is_success
 
     """
-
-    T = np.shape(chars)[0]
     resets[0] = 0
     while True:
         remaining = converter.convert(chars, colors, curs, timestamps, actions, scores)
-        end = T - remaining
+        end = np.shape(chars)[0] - remaining
 
         blstats_reader.read(blstats)
 
@@ -130,9 +101,6 @@ def _ttyrec_generator(
     scores = np.zeros((batch_size, seq_length), dtype=np.int32)
     blstats = np.zeros((batch_size, seq_length, nethack.NLE_BLSTATS_SIZE), dtype=np.int32)
 
-    if max_dungeon_level is not None:
-        init_dungeon_levels = np.ones((batch_size, 1), dtype=np.int32)
-
     key_vals = [
         ("tty_chars", chars),
         ("tty_colors", colors),
@@ -185,12 +153,11 @@ def _ttyrec_generator(
 
         # extract dungeon levels
         if max_dungeon_level is not None:
-            dlvls, init_dungeon_levels = extract_dlvls(chars, init_dungeon_levels, resets)
-            last_dlvls = dlvls[:, -1, ...]
-            for idx, (c, last_dlvl) in enumerate(zip(converters, last_dlvls)):
+            last_dlvls = blstats[:, -1, nethack.NLE_BL_DLEVEL]
+            for c, last_dlvl, blstats_reader in zip(converters, last_dlvls, blstats_readers):
                 if last_dlvl > max_dungeon_level:
                     load_fn(c, True)
-                    init_dungeon_levels[idx] = 1
+                    blstats_reader.load(c.gameid)
 
 
 class TtyrecDataset:
