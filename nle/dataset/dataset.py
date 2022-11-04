@@ -66,7 +66,7 @@ def convert_frames(
         if load_fn(converter):
             if converter.part == 0:
                 resets[0] = 1
-                blstats_reader.load(converter.gameid)
+                blstats_reader.load(converter.gameid, converter.filename)
         else:
             chars.fill(0)
             colors.fill(0)
@@ -123,7 +123,7 @@ def _ttyrec_generator(
 
     # Setup blstats readers
     blstats_readers = [
-        BlstatsReader(c.gameid, blstats_path) for c in converters
+        BlstatsReader(c.gameid, blstats_path, c.filename) for c in converters
     ]
 
     # Convert (at least one minibatch)
@@ -157,7 +157,7 @@ def _ttyrec_generator(
             for c, last_dlvl, blstats_reader in zip(converters, last_dlvls, blstats_readers):
                 if last_dlvl > max_dungeon_level:
                     load_fn(c, True)
-                    blstats_reader.load(c.gameid)
+                    blstats_reader.load(c.gameid, c.filename)
 
 
 class TtyrecDataset:
