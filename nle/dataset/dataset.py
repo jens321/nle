@@ -81,7 +81,7 @@ def convert_frames(
 
 
 def _ttyrec_generator(
-    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version, max_dungeon_level=None, dataset_name=None
+    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version, max_dungeon_level=None, blstats_path=None
 ):
     """A generator to fill minibatches with ttyrecs.
 
@@ -123,7 +123,7 @@ def _ttyrec_generator(
 
     # Setup blstats readers
     blstats_readers = [
-        BlstatsReader(c.gameid, dataset_name) for c in converters
+        BlstatsReader(c.gameid, blstats_path) for c in converters
     ]
 
     # Convert (at least one minibatch)
@@ -179,7 +179,8 @@ class TtyrecDataset:
         loop_forever=False,
         subselect_sql=None,
         subselect_sql_args=None,
-        max_dungeon_level=None
+        max_dungeon_level=None,
+        blstats_path=None
     ):
         """
         An iterable dataset to load minibatches of NetHack games from compressed
@@ -231,6 +232,7 @@ class TtyrecDataset:
         self.loop_forever = loop_forever
         self.max_dungeon_level = max_dungeon_level
         self.dataset_name = dataset_name
+        self.blstats_path = blstats_path
 
         sql_args = (dataset_name,)
         core_sql = """
@@ -359,7 +361,7 @@ class TtyrecDataset:
             self._map,
             self._ttyrec_version,
             self.max_dungeon_level,
-            self.dataset_name
+            self.blstats_path
         )
 
     def get_ttyrecs(self, gameids, chunk_size=None):
