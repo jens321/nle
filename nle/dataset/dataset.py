@@ -290,7 +290,7 @@ class TtyrecDataset:
         self._sql_args = sql_args
         self._gameids = list(gameids)
         self._threadpool = threadpool
-        self._map = partial(self._threadpool.map, timeout=60) if threadpool else map
+        self._map = partial(self._threadpool.map, timeout=600) if threadpool else map
 
     def get_paths(self, gameid):
         return [path for _, path in self._games[gameid]]
