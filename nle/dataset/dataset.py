@@ -46,7 +46,8 @@ def convert_frames(
         remaining = converter.convert(chars, colors, curs, timestamps, actions, scores)
         end = np.shape(chars)[0] - remaining
 
-        blstats_reader.read(blstats)
+        if blstats_reader:
+            blstats_reader.read(blstats)
 
         resets[1:end] = 0
         gameids[:end] = converter.gameid
@@ -66,7 +67,8 @@ def convert_frames(
         if load_fn(converter):
             if converter.part == 0:
                 resets[0] = 1
-                blstats_reader.load(converter.gameid, converter.filename)
+                if blstats_reader:
+                    blstats_reader.load(converter.gameid, converter.filename)
         else:
             chars.fill(0)
             colors.fill(0)
@@ -122,9 +124,14 @@ def _ttyrec_generator(
     assert all(load_fn(c) for c in converters), "Not enough ttyrecs to fill a batch!"
 
     # Setup blstats readers
-    blstats_readers = [
-        BlstatsReader(c.gameid, blstats_path, c.filename) for c in converters
-    ]
+    if blstats_path:
+        blstats_readers = [
+            BlstatsReader(c.gameid, blstats_path, c.filename) for c in converters
+        ]
+    else:
+        blstats_readers = [
+            None for c in converters
+        ]
 
     # Convert (at least one minibatch)
     _convert_frames = partial(convert_frames, load_fn=load_fn)
@@ -152,7 +159,7 @@ def _ttyrec_generator(
         yield dict(key_vals)
 
         # extract dungeon levels
-        if max_dungeon_level is not None:
+        if blstats_path is not None and max_dungeon_level is not None:
             last_dlvls = blstats[:, -1, nethack.NLE_BL_DLEVEL]
             for c, last_dlvl, blstats_reader in zip(converters, last_dlvls, blstats_readers):
                 if last_dlvl > max_dungeon_level:
