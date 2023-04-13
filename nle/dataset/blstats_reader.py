@@ -22,14 +22,18 @@ class BlstatsReader():
         self.gameid = gameid
         self.game_path = game_path
         self.blstats_path = self._get_blstats_path()
-        self.data = np.load(self.blstats_path)
+        try:
+            self.data = np.load(self.blstats_path)[..., :-1] # cut encumbrance
+        except:
+            print(self.blstats_path)
+            raise Exception('Encountered blstats error again!')
         self.cursor = 0
 
     def _get_blstats_path(self):
         dataset_name = self.blstats_root.split('/')[-1]
         if dataset_name == 'nld-nao' or dataset_name == 'nld-aa':
             return os.path.join(self.blstats_root, str(self.gameid), f'blstats_{self.gameid}.npy')
-        elif dataset_name == 'nld-aa-1':
+        elif dataset_name == 'nld-aa-1' or dataset_name == 'nld-nao-1':
             return os.path.join(self.blstats_root, f'blstats_{self.gameid}.npy')
         else:
             # example: /efs/tuylsjen/rl_planning/logs/torchbeast-20221104-202816/bootstrap-round-0/0/nle.61354.0.ttyrec3.bz2
