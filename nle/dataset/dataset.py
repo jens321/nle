@@ -10,14 +10,19 @@ from nle import _pyconverter as converter
 from nle import dataset as nld
 from nle import nethack
 from nle.dataset.blstats_reader import BlstatsReader
+from nle.dataset.inventory_converter import InventoryConverter
 
 def convert_frames(
     converter,
+    inv_converter,
     blstats_reader,
     chars,
     colors,
     curs,
     blstats,
+    inv_strs, 
+    inv_letters,
+    inv_oclasses,
     timestamps,
     actions,
     scores,
@@ -44,6 +49,8 @@ def convert_frames(
     resets[0] = 0
     while True:
         remaining = converter.convert(chars, colors, curs, timestamps, actions, scores)
+        if inv_converter:
+            inv_remaining = inv_converter.convert(inv_strs, inv_letters, inv_oclasses)
         end = np.shape(chars)[0] - remaining
 
         if blstats_reader:
@@ -58,6 +65,9 @@ def convert_frames(
         chars = chars[-remaining:]
         colors = colors[-remaining:]
         blstats = blstats[-remaining:]
+        inv_strs = inv_strs[-remaining:]
+        inv_letters = inv_letters[-remaining:]
+        inv_oclasses = inv_oclasses[-remaining:]
         curs = curs[-remaining:]
         timestamps = timestamps[-remaining:]
         actions = actions[-remaining:]
@@ -67,12 +77,17 @@ def convert_frames(
         if load_fn(converter):
             if converter.part == 0:
                 resets[0] = 1
+                if inv_converter:
+                    inv_converter.load_parquet(converter.filename)
                 if blstats_reader:
                     blstats_reader.load(converter.gameid, converter.filename)
         else:
             chars.fill(0)
             colors.fill(0)
             blstats.fill(0)
+            inv_strs.fill(0)
+            inv_letters.fill(0)
+            inv_oclasses.fill(0)
             curs.fill(0)
             timestamps.fill(0)
             actions.fill(0)
@@ -83,7 +98,7 @@ def convert_frames(
 
 
 def _ttyrec_generator(
-    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version, max_dungeon_level=None, blstats_path=None
+    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version, max_dungeon_level=None, blstats_path=None, use_inventory: bool = False
 ):
     """A generator to fill minibatches with ttyrecs.
 
@@ -102,6 +117,9 @@ def _ttyrec_generator(
     gameids = np.zeros((batch_size, seq_length), dtype=np.int32)
     scores = np.zeros((batch_size, seq_length), dtype=np.int32)
     blstats = np.zeros((batch_size, seq_length, nethack.NLE_BLSTATS_SIZE), dtype=np.int32)
+    inv_strs = np.zeros((batch_size, seq_length, nethack.INV_STRS_SHAPE[0], nethack.INV_STRS_SHAPE[1]), dtype=np.uint8)
+    inv_letters = np.zeros((batch_size, seq_length, nethack.INV_SIZE[0]), dtype=np.uint8)
+    inv_oclasses = np.zeros((batch_size, seq_length, nethack.INV_SIZE[0]), dtype=np.uint8)
 
     key_vals = [
         ("tty_chars", chars),
@@ -110,7 +128,10 @@ def _ttyrec_generator(
         ("timestamps", timestamps),
         ("done", resets),
         ("gameids", gameids),
-        ("blstats", blstats)
+        ("blstats", blstats),
+        ("inv_strs", inv_strs),
+        ("inv_letters", inv_letters),
+        ("inv_oclasses", inv_oclasses)
     ]
     if ttyrec_version >= 2:
         key_vals.append(("keypresses", actions))
@@ -133,6 +154,16 @@ def _ttyrec_generator(
             None for c in converters
         ]
 
+    # Setup inventory converters
+    if use_inventory:
+        inv_converters = [
+            InventoryConverter() for c in converters
+        ]
+        for inv_converter, c in zip(inv_converters, converters):
+            inv_converter.load_parquet(c.filename)
+    else:
+        inv_converters = [None for c in converters]
+
     # Convert (at least one minibatch)
     _convert_frames = partial(convert_frames, load_fn=load_fn)
     gameids[0, -1] = 1  # basically creating a "do-while" loop by setting an indicator
@@ -143,11 +174,15 @@ def _ttyrec_generator(
             map_fn(
                 _convert_frames,
                 converters,
+                inv_converters,
                 blstats_readers,
                 chars,
                 colors,
                 cursors,
                 blstats,
+                inv_strs,
+                inv_letters,
+                inv_oclasses,
                 timestamps,
                 actions,
                 scores,
@@ -187,7 +222,8 @@ class TtyrecDataset:
         subselect_sql=None,
         subselect_sql_args=None,
         max_dungeon_level=None,
-        blstats_path=None
+        blstats_path=None,
+        use_inventory: bool = False
     ):
         """
         An iterable dataset to load minibatches of NetHack games from compressed
@@ -240,6 +276,7 @@ class TtyrecDataset:
         self.max_dungeon_level = max_dungeon_level
         self.dataset_name = dataset_name
         self.blstats_path = blstats_path
+        self.use_inventory = use_inventory
 
         sql_args = (dataset_name,)
         core_sql = """
@@ -297,7 +334,7 @@ class TtyrecDataset:
         self._sql_args = sql_args
         self._gameids = list(gameids)
         self._threadpool = threadpool
-        self._map = partial(self._threadpool.map, timeout=600) if threadpool else map
+        self._map = partial(self._threadpool.map, timeout=6000) if threadpool else map
 
     def get_paths(self, gameid):
         return [path for _, path in self._games[gameid]]
@@ -368,7 +405,8 @@ class TtyrecDataset:
             self._map,
             self._ttyrec_version,
             self.max_dungeon_level,
-            self.blstats_path
+            self.blstats_path,
+            self.use_inventory
         )
 
     def get_ttyrecs(self, gameids, chunk_size=None):

@@ -8,6 +8,7 @@ from nle.nethack.nethack import (
     BLSTATS_SHAPE,
     MESSAGE_SHAPE,
     INV_SIZE,
+    INV_STRS_SHAPE,
     PROGRAM_STATE_SHAPE,
     INTERNAL_SHAPE,
     OBSERVATION_DESC,
