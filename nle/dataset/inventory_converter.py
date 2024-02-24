@@ -2,7 +2,7 @@ import time
 
 import pyarrow.parquet as pq
 import pyarrow as pa
-from nle.nethack import INV_STRS_SHAPE, INV_SIZE
+from nle.nethack import INV_SIZE
 import numpy as np
 
 class InventoryConverter:
@@ -12,9 +12,7 @@ class InventoryConverter:
         self.cursor = 0
 
         obs_schema_keys = [
-            ('inv_strs', pa.list_(pa.uint8())),
-            ('inv_letters', pa.list_(pa.uint8())),
-            ('inv_oclasses', pa.list_(pa.uint8())),
+            ('inv_glyphs', pa.list_(pa.int16())),
         ]
         self.obs_schema = pa.schema(obs_schema_keys)
 
@@ -32,39 +30,30 @@ class InventoryConverter:
         try:
             self.table = pq.read_table(
                 inv_path, 
-                columns=['inv_strs', 'inv_letters', 'inv_oclasses'], 
+                columns=['inv_glyphs'], 
                 memory_map=True,
                 schema=self.obs_schema
             )
             num_rows = self.table.num_rows
 
-            self.inv_strs = pa.compute.list_flatten(self.table['inv_strs']).to_numpy()
-            self.inv_strs = self.inv_strs.reshape(num_rows, *INV_STRS_SHAPE)
+            self.inv_glyphs = pa.compute.list_flatten(self.table['inv_glyphs']).to_numpy()
+            self.inv_glyphs = self.inv_glyphs.reshape(num_rows, *INV_SIZE)
 
-            self.inv_letters = pa.compute.list_flatten(self.table['inv_letters']).to_numpy()
-            self.inv_letters = self.inv_letters.reshape(num_rows, *INV_SIZE)
-
-            self.inv_oclasses = pa.compute.list_flatten(self.table['inv_oclasses']).to_numpy()
-            self.inv_oclasses = self.inv_oclasses.reshape(num_rows, *INV_SIZE)
         except:
             # NOTE: sometimes we have corrupted parquet files. If so,
             # just fill with zeros. 
             print(f"Error loading parquet file: {inv_path}")
-            self.inv_strs = np.zeros((int(2e5), *INV_STRS_SHAPE), dtype=np.uint8)
-            self.inv_letters = np.zeros((int(2e5), *INV_SIZE), dtype=np.uint8)
-            self.inv_oclasses = np.zeros((int(2e5), *INV_SIZE), dtype=np.uint8)
+            self.inv_glyphs = np.zeros((int(2e5), *INV_SIZE), dtype=np.uint8)
 
         # Reset cursor
         self.cursor = 0
 
-    def convert(self, inv_strs, inv_letters, inv_oclasses):
-        input_len = inv_strs.shape[0]
-        end_cursor = self.inv_strs.shape[0]
+    def convert(self, inv_glyphs):
+        input_len = inv_glyphs.shape[0]
+        end_cursor = self.inv_glyphs.shape[0]
         to_read = min(input_len, end_cursor - self.cursor)
 
-        np.copyto(inv_strs[:to_read], self.inv_strs[self.cursor: self.cursor + to_read])
-        np.copyto(inv_letters[:to_read], self.inv_letters[self.cursor: self.cursor + to_read])
-        np.copyto(inv_oclasses[:to_read], self.inv_oclasses[self.cursor: self.cursor + to_read])
+        np.copyto(inv_glyphs[:to_read], self.inv_glyphs[self.cursor: self.cursor + to_read])
 
         self.cursor += to_read
 

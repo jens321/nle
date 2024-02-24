@@ -20,9 +20,7 @@ def convert_frames(
     colors,
     curs,
     blstats,
-    inv_strs, 
-    inv_letters,
-    inv_oclasses,
+    inv_glyphs,
     timestamps,
     actions,
     scores,
@@ -50,7 +48,7 @@ def convert_frames(
     while True:
         remaining = converter.convert(chars, colors, curs, timestamps, actions, scores)
         if inv_converter:
-            inv_remaining = inv_converter.convert(inv_strs, inv_letters, inv_oclasses)
+            inv_remaining = inv_converter.convert(inv_glyphs)
         end = np.shape(chars)[0] - remaining
 
         if blstats_reader:
@@ -65,9 +63,7 @@ def convert_frames(
         chars = chars[-remaining:]
         colors = colors[-remaining:]
         blstats = blstats[-remaining:]
-        inv_strs = inv_strs[-remaining:]
-        inv_letters = inv_letters[-remaining:]
-        inv_oclasses = inv_oclasses[-remaining:]
+        inv_glyphs = inv_glyphs[-remaining:]
         curs = curs[-remaining:]
         timestamps = timestamps[-remaining:]
         actions = actions[-remaining:]
@@ -85,9 +81,7 @@ def convert_frames(
             chars.fill(0)
             colors.fill(0)
             blstats.fill(0)
-            inv_strs.fill(0)
-            inv_letters.fill(0)
-            inv_oclasses.fill(0)
+            inv_glyphs.fill(0)
             curs.fill(0)
             timestamps.fill(0)
             actions.fill(0)
@@ -117,9 +111,7 @@ def _ttyrec_generator(
     gameids = np.zeros((batch_size, seq_length), dtype=np.int32)
     scores = np.zeros((batch_size, seq_length), dtype=np.int32)
     blstats = np.zeros((batch_size, seq_length, nethack.NLE_BLSTATS_SIZE), dtype=np.int32)
-    inv_strs = np.zeros((batch_size, seq_length, nethack.INV_STRS_SHAPE[0], nethack.INV_STRS_SHAPE[1]), dtype=np.uint8)
-    inv_letters = np.zeros((batch_size, seq_length, nethack.INV_SIZE[0]), dtype=np.uint8)
-    inv_oclasses = np.zeros((batch_size, seq_length, nethack.INV_SIZE[0]), dtype=np.uint8)
+    inv_glyphs = np.zeros((batch_size, seq_length, nethack.INV_SIZE[0]), dtype=np.int16)
 
     key_vals = [
         ("tty_chars", chars),
@@ -129,9 +121,7 @@ def _ttyrec_generator(
         ("done", resets),
         ("gameids", gameids),
         ("blstats", blstats),
-        ("inv_strs", inv_strs),
-        ("inv_letters", inv_letters),
-        ("inv_oclasses", inv_oclasses)
+        ("inv_glyphs", inv_glyphs),
     ]
     if ttyrec_version >= 2:
         key_vals.append(("keypresses", actions))
@@ -180,9 +170,7 @@ def _ttyrec_generator(
                 colors,
                 cursors,
                 blstats,
-                inv_strs,
-                inv_letters,
-                inv_oclasses,
+                inv_glyphs,
                 timestamps,
                 actions,
                 scores,
