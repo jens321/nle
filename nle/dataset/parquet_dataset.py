@@ -6,26 +6,27 @@ from functools import partial
 
 import numpy as np
 
-from nle.nethack import TERMINAL_SHAPE
 from nle import _pyconverter as converter
 from nle import dataset as nld
 from nle import nethack
-from nle.dataset.blstats_reader import BlstatsReader
 from nle.dataset.parquet_converter import ParquetConverter
 
 def convert_frames(
     converter,
+    parquet_converter,
     chars,
     colors,
     curs,
-    actions,
-    resets,
-    gameids,
     blstats,
     inv_glyphs,
     glyphs,
     message,
-    load_fn
+    timestamps,
+    actions,
+    scores,
+    resets,
+    gameids,
+    load_fn,
 ):
     """Convert frames for a single batch entry.
 
@@ -33,6 +34,7 @@ def convert_frames(
     :param chars: Array of characters -  np.array(np.uint8) [ SEQ x ROW x COL]
     :param colors: Array of colors -  np.array(np.uint8) [ SEQ x ROW x COL]
     :param curs: Array of cursors -  np.array(np.int16) [ SEQ x 2 ]
+    :param timestamps: Array of timestamps -  np.array(np.int64) [ SEQ ]
     :param actions: Array of actions at t in response to output at t
         - np.array(np.uint8) [ SEQ ]
     :param scores: Array of in-game scores -  np.array(np.int32) [ SEQ ]
@@ -44,7 +46,11 @@ def convert_frames(
     """
     resets[0] = 0
     while True:
-        remaining = converter.convert(chars, colors, curs, actions, blstats, inv_glyphs, glyphs, message)
+        remaining = converter.convert(chars, colors, curs, timestamps, actions, scores)
+        if parquet_converter:
+            glyph_remaining = parquet_converter.convert(chars, colors, curs, actions, blstats, inv_glyphs, glyphs, message)
+
+        assert remaining == glyph_remaining, "Mismatch in number of frames between ttyrec and parquet"
         end = np.shape(chars)[0] - remaining
 
         resets[1:end] = 0
@@ -55,33 +61,39 @@ def convert_frames(
         # There still space in the buffers; load a new ttyrec and carry on.
         chars = chars[-remaining:]
         colors = colors[-remaining:]
-        curs = curs[-remaining:]
-        actions = actions[-remaining:]
-        resets = resets[-remaining:]
-        gameids = gameids[-remaining:]
         blstats = blstats[-remaining:]
         inv_glyphs = inv_glyphs[-remaining:]
         glyphs = glyphs[-remaining:]
         message = message[-remaining:]
+        curs = curs[-remaining:]
+        timestamps = timestamps[-remaining:]
+        actions = actions[-remaining:]
+        scores = scores[-remaining:]
+        resets = resets[-remaining:]
+        gameids = gameids[-remaining:]
         if load_fn(converter):
             if converter.part == 0:
                 resets[0] = 1
+                if parquet_converter:
+                    parquet_converter.load_parquet(converter.filename)
         else:
             chars.fill(0)
             colors.fill(0)
-            curs.fill(0)
-            actions.fill(0)
-            resets.fill(0)
-            gameids.fill(0)
             blstats.fill(0)
             inv_glyphs.fill(0)
             glyphs.fill(0)
             message.fill(0)
+            curs.fill(0)
+            timestamps.fill(0)
+            actions.fill(0)
+            scores.fill(0)
+            resets.fill(0)
+            gameids.fill(0)
             return
 
 
-def _parquet_generator(
-    batch_size, seq_length, load_fn, map_fn
+def _ttyrec_generator(
+    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version
 ):
     """A generator to fill minibatches with ttyrecs.
 
@@ -91,14 +103,16 @@ def _parquet_generator(
        map_fn(fn, *iterables) -> <generator> (can use built-in map)
 
     """
-    chars = np.zeros((batch_size, seq_length, TERMINAL_SHAPE[0], TERMINAL_SHAPE[1]), dtype=np.uint8)
-    colors = np.zeros((batch_size, seq_length, TERMINAL_SHAPE[0], TERMINAL_SHAPE[1]), dtype=np.int8)
+    chars = np.zeros((batch_size, seq_length, rows, cols), dtype=np.uint8)
+    colors = np.zeros((batch_size, seq_length, rows, cols), dtype=np.int8)
     cursors = np.zeros((batch_size, seq_length, 2), dtype=np.int16)
+    timestamps = np.zeros((batch_size, seq_length), dtype=np.int64)
     actions = np.zeros((batch_size, seq_length), dtype=np.uint8)
     resets = np.zeros((batch_size, seq_length), dtype=np.uint8)
     gameids = np.zeros((batch_size, seq_length), dtype=np.int32)
+    scores = np.zeros((batch_size, seq_length), dtype=np.int32)
     blstats = np.zeros((batch_size, seq_length, nethack.NLE_BLSTATS_SIZE), dtype=np.int32)
-    inv_glyphs = np.zeros((batch_size, seq_length, *nethack.INV_SIZE), dtype=np.int16)
+    inv_glyphs = np.zeros((batch_size, seq_length, nethack.INV_SIZE[0]), dtype=np.int16)
     glyphs = np.zeros((batch_size, seq_length, *nethack.DUNGEON_SHAPE), dtype=np.int16)
     message = np.zeros((batch_size, seq_length, *nethack.MESSAGE_SHAPE), dtype=np.uint8)
 
@@ -106,21 +120,30 @@ def _parquet_generator(
         ("tty_chars", chars),
         ("tty_colors", colors),
         ("tty_cursor", cursors),
-        ("keypresses", actions),
+        ("timestamps", timestamps),
         ("done", resets),
         ("gameids", gameids),
         ("blstats", blstats),
         ("inv_glyphs", inv_glyphs),
         ("glyphs", glyphs),
-        ("message", message)
+        ("message", message),
     ]
+    if ttyrec_version >= 2:
+        key_vals.append(("keypresses", actions))
+    if ttyrec_version >= 3:
+        key_vals.append(("scores", scores))
 
     # Load initial gameids.
     converters = [
-        ParquetConverter() for _ in range(batch_size)
+        converter.Converter(rows, cols, ttyrec_version) for _ in range(batch_size)
     ]
-    # assert all(load_fn(c) for c in converters), "Not enough ttyrecs to fill a batch!"
-    assert all(list(map_fn(load_fn, converters))), "Not enough ttyrecs to fill a batch!"
+    assert all(load_fn(c) for c in converters), "Not enough ttyrecs to fill a batch!"
+
+    parquet_converters = [
+        ParquetConverter() for c in converters
+    ]
+    for parquet_converter, c in zip(parquet_converters, converters):
+        parquet_converter.load_parquet(c.filename)
 
     # Convert (at least one minibatch)
     _convert_frames = partial(convert_frames, load_fn=load_fn)
@@ -132,16 +155,17 @@ def _parquet_generator(
             map_fn(
                 _convert_frames,
                 converters,
+                parquet_converters,
                 chars,
                 colors,
                 cursors,
-                actions,
-                resets,
-                gameids,
                 blstats,
                 inv_glyphs,
-                glyphs,
-                message
+                timestamps,
+                actions,
+                scores,
+                resets,
+                gameids,
             )
         )
 
@@ -149,41 +173,134 @@ def _parquet_generator(
 
 
 class ParquetDataset:
-    """Dataset object to allow iteration through parquet files.
+    """Dataset object to allow iteration through the ttyrecs found in our ttyrec
+    database.
     """
 
     def __init__(
         self,
-        dataset_root: str,
+        dataset_name,
         batch_size=128,
         seq_length=32,
+        rows=24,
+        cols=80,
+        dbfilename=nld.db.DB,
         threadpool=None,
         gameids=None,
         shuffle=True,
         loop_forever=False
     ):
         """
-        :param dataset_root: Path to root dataset folder.
+        An iterable dataset to load minibatches of NetHack games from compressed
+        ttyrec*.bz2 files into numpy arrays. (shape: [batch_size, seq_length, ...])
+
+        This class makes use of a sqlite3 database at `dbfilename` to find the
+        metadata and the location of files in a dataset. It then uses these to
+        create generators which convert the ttyrecs on the fly. Note that the
+        dataset generators always reuse their numpy arrays, writing into the
+        arrays instead of generating new ones. Methods to create and populate the
+        db from an NLE directry can be found in `populate_db.py`.
+
+        Example
+        -------
+            ```
+            import nle.dataset as nld
+
+            if not os.path.exists(nld.db.DB):
+                nld.db.create()
+                nld.populate_db.add_nledata_directory('path/to/nle_data', "data1")
+
+            dataset = nld.TtyrecDataset("data1"):
+
+            for mb in dataset:
+                # NB: dataset reuses np arrays, for performance reasons
+                print(mb)
+            ```
+
         :param batch_size: Number of parallel games to load.
         :param seq_length: Number of frames to load per game.
+        :param rows: Row size of the terminal screen.
+        :param cols: Column size of the terminal screen.
+        :param dbfilename: Path to the database file
         :param gameids: Use a subselection of games (gameids) only.
         :param shuffle: Shuffle the order of gameids before iterating through them.
         :param loop_forever: If true, cycle through gameids forever,
             insted of padding empty batch dims with 0's.
+        :param subselect_sql: SQL Query to subselect games (gameids) using metadata
+        :param subselect_sql_args: SQL Query Args to subselect games (gameids)
+            using metadata.
         """
         self.batch_size = batch_size
         self.seq_length = seq_length
+        self.rows = rows
+        self.cols = cols
 
         self.shuffle = shuffle
         self.loop_forever = loop_forever
-        self.dataset_root = dataset_root
+        self.dataset_name = dataset_name
+
+        sql_args = (dataset_name,)
+        core_sql = """
+            SELECT ttyrecs.gameid, ttyrecs.part, ttyrecs.path
+            FROM ttyrecs
+            INNER JOIN datasets ON ttyrecs.gameid=datasets.gameid
+            WHERE datasets.dataset_name=?"""
+
+        meta_sql = """
+            SELECT games.*
+            FROM games
+            INNER JOIN datasets ON games.gameid=datasets.gameid
+            WHERE datasets.dataset_name=?"""
+
+        self._games = defaultdict(list)
+        self._meta = None  # Populate lazily.
+        self.dbfilename = dbfilename
+        with nld.db.connect(self.dbfilename) as conn:
+            c = conn.cursor()
+
+            for row in c.execute(core_sql, sql_args):
+                self._games[row[0]].append(row[1:3])
+
+            # Guarantee order is [part0, ..., partN] for multi-part games.
+            for files in self._games.values():
+                files.sort()
+
+            self._rootpath = nld.db.get_root(dataset_name, conn)
+            self._ttyrec_version = nld.db.get_ttyrec_version(dataset_name, conn)
 
         if gameids is None:
-            gameids = list(map(lambda x: int(x), os.listdir(self.dataset_root)))
+            gameids = self._games.keys()
 
+        self._core_sql = core_sql
+        self._meta_sql = meta_sql
+        self._sql_args = sql_args
         self._gameids = list(gameids)
         self._threadpool = threadpool
-        self._map = partial(self._threadpool.map, timeout=1200) if threadpool else map
+        self._map = partial(self._threadpool.map, timeout=6000) if threadpool else map
+
+    def get_paths(self, gameid):
+        return [path for _, path in self._games[gameid]]
+
+    def get_meta(self, gameid):
+        if self._meta is None:
+            self.populate_metadata()
+        if gameid not in self._meta:
+            return None
+        return self._meta[gameid][0]
+
+    def get_meta_columns(self):
+        if self._meta is None:
+            self.populate_metadata()
+        return self._meta_cols
+
+    def populate_metadata(self):
+        self._meta = defaultdict(list)
+        with nld.db.connect(self.dbfilename) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            for row in c.execute(self._meta_sql, self._sql_args):
+                self._meta[row[0]].append(row)
+            self._meta_cols = [desc[0] for desc in c.description]
 
     def _make_load_fn(self, gameids):
         """Make a closure to load the next gameid from the db into the converter."""
@@ -210,26 +327,45 @@ class ParquetDataset:
                 part = 0
 
             filename = files[part]
-            converter.load_parquet(filename, gameid=gameid, part=part)
+            filepath = os.path.join(self._rootpath, filename)
+            converter.load_ttyrec(filepath, gameid=gameid, part=part)
             return True
 
         return _load_fn
-
-    def get_paths(self, gameid: int):
-        if gameid == 0: return []
-        folder = os.path.join(self.dataset_root, str(gameid))
-        files = os.listdir(folder)
-        rollout_files = [os.path.join(folder, f) for f in files if f.startswith('rollout')]
-        return sorted(rollout_files)
 
     def __iter__(self):
         gameids = list(self._gameids)
         if self.shuffle:
             np.random.shuffle(gameids)
 
-        return _parquet_generator(
+        return _ttyrec_generator(
             self.batch_size,
             self.seq_length,
+            self.rows,
+            self.cols,
             self._make_load_fn(gameids),
-            self._map
+            self._map,
+            self._ttyrec_version,
+            self.max_dungeon_level,
+            self.blstats_path,
+            self.use_inventory
         )
+
+    def get_ttyrecs(self, gameids, chunk_size=None):
+        """Fetch data from a single episode, chunked into a sequence of tensors."""
+        seq_length = chunk_size or self.seq_length
+        mbs = []
+        for mb in _ttyrec_generator(
+            len(gameids),
+            seq_length,
+            self.rows,
+            self.cols,
+            self._make_load_fn(gameids),
+            self._map,
+            self._ttyrec_version,
+        ):
+            mbs.append({k: t.copy() for k, t in mb.items()})
+        return mbs
+
+    def get_ttyrec(self, gameid, chunk_size=None):
+        return self.get_ttyrecs([gameid], chunk_size)

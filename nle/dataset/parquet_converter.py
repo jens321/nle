@@ -37,9 +37,13 @@ class ParquetConverter():
         ]
         self.obs_schema = pa.schema(obs_schema_keys)
 
-    def load_parquet(self, path: str, gameid: int, part: int):
-        self.gameid = gameid
-        self.part = part
+    def load_parquet(self, path: str):
+        full_path_parts = path.split("/")
+        filename = full_path_parts[-1]
+        filename_parts = filename.split(".")
+        pid = filename_parts[1]
+        epi = filename_parts[2]
+        path = "/".join(full_path_parts[:-1]) + f"/glyphs_pid_{pid}_epi_{epi}.parquet"
 
         # Load stuff 
         self.table = pq.read_table(
