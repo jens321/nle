@@ -161,6 +161,8 @@ def _ttyrec_generator(
                 cursors,
                 blstats,
                 inv_glyphs,
+                glyphs,
+                message,
                 timestamps,
                 actions,
                 scores,
@@ -345,10 +347,7 @@ class ParquetDataset:
             self.cols,
             self._make_load_fn(gameids),
             self._map,
-            self._ttyrec_version,
-            self.max_dungeon_level,
-            self.blstats_path,
-            self.use_inventory
+            self._ttyrec_version
         )
 
     def get_ttyrecs(self, gameids, chunk_size=None):
