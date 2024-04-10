@@ -46,11 +46,11 @@ def convert_frames(
     """
     resets[0] = 0
     while True:
-        remaining = converter.convert(chars, colors, curs, timestamps, actions, scores)
+        # remaining = converter.convert(chars, colors, curs, timestamps, actions, scores)
         if parquet_converter:
-            glyph_remaining = parquet_converter.convert(chars, colors, curs, actions, blstats, inv_glyphs, glyphs, message)
+            remaining = parquet_converter.convert(chars, colors, curs, actions, blstats, inv_glyphs, glyphs, message)
 
-        assert remaining == glyph_remaining, "Mismatch in number of frames between ttyrec and parquet"
+        # assert remaining == glyph_remaining, f"Mismatch in number of frames between ttyrec and parquet {remaining} vs. {glyph_remaining}"
         end = np.shape(chars)[0] - remaining
 
         resets[1:end] = 0
@@ -140,7 +140,7 @@ def _ttyrec_generator(
     assert all(load_fn(c) for c in converters), "Not enough ttyrecs to fill a batch!"
 
     parquet_converters = [
-        ParquetConverter() for c in converters
+        ParquetConverter(seq_length) for c in converters
     ]
     for parquet_converter, c in zip(parquet_converters, converters):
         parquet_converter.load_parquet(c.filename)

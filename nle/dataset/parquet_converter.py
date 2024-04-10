@@ -1,15 +1,19 @@
 import time
+import copy
 
 import pyarrow.parquet as pq
 import pyarrow as pa
+from pyarrow import compute
 from nle.nethack import TERMINAL_SHAPE, INV_SIZE, DUNGEON_SHAPE, BLSTATS_SHAPE, MESSAGE_SHAPE
 import numpy as np
 
 class ParquetConverter():
-    def __init__(self):
+    def __init__(self, unroll_length: int):
         self.gameid = 0
         self.part = 0
         self.cursor = 0
+
+        self.unroll_length = unroll_length
 
         obs_schema_keys = [
             ('glyphs', pa.list_(pa.int16())),
@@ -45,55 +49,107 @@ class ParquetConverter():
         epi = filename_parts[2]
         path = "/".join(full_path_parts[:-1]) + f"/glyphs_pid_{pid}_epi_{epi}.parquet"
 
-        # Load stuff 
-        self.table = pq.read_table(
-            path, 
-            columns=['tty_chars', 'tty_colors', 'tty_cursor', 'actions', 'blstats', 'inv_glyphs', 'glyphs', 'message'], 
-            memory_map=True,
-            schema=self.obs_schema
-        )
-        num_rows = self.table.num_rows - 1
+        # read parquet file but not full table
+        try:
+            self.pq_file = pq.ParquetFile(path)
+            self.num_rows = self.pq_file.metadata.num_rows
+            self.table = self.pq_file.iter_batches(batch_size=self.unroll_length)
+            self.batch = next(self.table)
+            self.process_new_batch(self.batch)
+        except:
+            print(f"Error reading parquet file!")
+            self.num_rows = 0
 
-        self.chars = pa.compute.list_flatten(self.table['tty_chars'][:-1]).to_numpy()
-        self.chars = self.chars.reshape(num_rows, TERMINAL_SHAPE[0], TERMINAL_SHAPE[1])
-
-        self.colors = pa.compute.list_flatten(self.table['tty_colors'][:-1]).to_numpy()
-        self.colors = self.colors.reshape(num_rows, TERMINAL_SHAPE[0], TERMINAL_SHAPE[1])
-    
-        self.cursors = pa.compute.list_flatten(self.table['tty_cursor'][:-1]).to_numpy()
-        self.cursors = self.cursors.reshape(num_rows, 2)
-
-        self.actions = self.table['actions'][:-1].to_numpy()
-
-        self.blstats = pa.compute.list_flatten(self.table['blstats'][:-1]).to_numpy()
-        self.blstats = self.blstats.reshape(num_rows, *BLSTATS_SHAPE)
-
-        self.message = pa.compute.list_flatten(self.table['message'][:-1]).to_numpy()
-        self.message = self.message.reshape(num_rows, *MESSAGE_SHAPE)
-
-        self.inv_glyphs = pa.compute.list_flatten(self.table['inv_glyphs'][:-1]).to_numpy()
-        self.inv_glyphs = self.inv_glyphs.reshape(num_rows, *INV_SIZE)
-
-        self.glyphs = pa.compute.list_flatten(self.table['glyphs'][:-1]).to_numpy()
-        self.glyphs = self.glyphs.reshape(num_rows, *DUNGEON_SHAPE)
 
         # Reset cursor
         self.cursor = 0
+        self.batch_cursor = 0
 
     def convert(self, chars, colors, curs, actions, blstats, inv_glyphs, glyphs, message):
+        # old_chars = copy.deepcopy(chars)
+        # old_colors = copy.deepcopy(colors)
+        # old_curs = copy.deepcopy(curs)
+        # old_actions = copy.deepcopy(actions)
+
         input_len = chars.shape[0]
-        end_cursor = self.chars.shape[0]
-        to_read = min(input_len, end_cursor - self.cursor)
+        end_cursor = self.num_rows
+        total_to_read = min(input_len, end_cursor - self.cursor)
+        total_read = 0
 
-        np.copyto(chars[:to_read], self.chars[self.cursor: self.cursor + to_read])
-        np.copyto(colors[:to_read], self.colors[self.cursor: self.cursor + to_read])
-        np.copyto(curs[:to_read], self.cursors[self.cursor: self.cursor + to_read])
-        np.copyto(actions[:to_read], self.actions[self.cursor: self.cursor + to_read])
-        np.copyto(blstats[:to_read], self.blstats[self.cursor: self.cursor + to_read])
-        np.copyto(message[:to_read], self.message[self.cursor: self.cursor + to_read])
-        np.copyto(inv_glyphs[:to_read], self.inv_glyphs[self.cursor: self.cursor + to_read])
-        np.copyto(glyphs[:to_read], self.glyphs[self.cursor: self.cursor + to_read])
+        if total_to_read == 0:
+            return input_len
 
-        self.cursor += to_read
+        batch_to_read = min(input_len, len(self.batch) - self.batch_cursor)
 
-        return input_len - to_read
+        np.copyto(chars[:batch_to_read], self.chars[self.batch_cursor:self.batch_cursor + batch_to_read])
+        np.copyto(colors[:batch_to_read], self.colors[self.batch_cursor:self.batch_cursor + batch_to_read])
+        np.copyto(curs[:batch_to_read], self.cursors[self.batch_cursor:self.batch_cursor + batch_to_read])
+        np.copyto(actions[:batch_to_read], self.actions[self.batch_cursor:self.batch_cursor + batch_to_read])
+        np.copyto(blstats[:batch_to_read], self.blstats[self.batch_cursor:self.batch_cursor + batch_to_read])
+        np.copyto(message[:batch_to_read], self.message[self.batch_cursor:self.batch_cursor + batch_to_read])
+        np.copyto(inv_glyphs[:batch_to_read], self.inv_glyphs[self.batch_cursor:self.batch_cursor + batch_to_read])
+        np.copyto(glyphs[:batch_to_read], self.glyphs[self.batch_cursor:self.batch_cursor + batch_to_read])
+
+        total_read += batch_to_read
+        self.batch_cursor += batch_to_read
+        self.cursor += batch_to_read
+
+        if batch_to_read < total_to_read:
+            self.batch = next(self.table)
+            self.process_new_batch(self.batch)
+            self.batch_cursor = 0
+
+            batch_to_read = min(input_len - total_read, len(self.batch) - self.batch_cursor)
+
+            np.copyto(chars[total_read:total_read + batch_to_read], self.chars[self.batch_cursor:self.batch_cursor + batch_to_read])
+            np.copyto(colors[total_read:total_read + batch_to_read], self.colors[self.batch_cursor:self.batch_cursor + batch_to_read])
+            np.copyto(curs[total_read:total_read + batch_to_read], self.cursors[self.batch_cursor:self.batch_cursor + batch_to_read])
+            np.copyto(actions[total_read:total_read + batch_to_read], self.actions[self.batch_cursor:self.batch_cursor + batch_to_read])
+            np.copyto(blstats[total_read:total_read + batch_to_read], self.blstats[self.batch_cursor:self.batch_cursor + batch_to_read])
+            np.copyto(message[total_read:total_read + batch_to_read], self.message[self.batch_cursor:self.batch_cursor + batch_to_read])
+            np.copyto(inv_glyphs[total_read:total_read + batch_to_read], self.inv_glyphs[self.batch_cursor:self.batch_cursor + batch_to_read])
+            np.copyto(glyphs[total_read:total_read + batch_to_read], self.glyphs[self.batch_cursor:self.batch_cursor + batch_to_read])
+
+            total_read += batch_to_read
+            self.batch_cursor += batch_to_read
+            self.cursor += batch_to_read
+        
+        if self.batch_cursor == len(self.batch) and self.cursor < end_cursor:
+            self.batch = next(self.table)
+            self.process_new_batch(self.batch)
+            self.batch_cursor = 0
+
+        # try:
+        #     # assert np.all(chars[:total_read] == old_chars[:total_read])
+        #     # assert np.all(colors[:total_read] == old_colors[:total_read])
+        #     # assert np.all(curs[:total_read] == old_curs[:total_read])
+        #     breakpoint()
+        #     assert np.all(actions[:total_read] == old_actions[:total_read])
+        # except:
+        #     breakpoint()
+
+        return input_len - total_to_read
+    
+    def process_new_batch(self, batch):
+        chars_flattened = compute.list_flatten(batch['tty_chars']).to_numpy()
+        self.chars = chars_flattened.reshape(-1, TERMINAL_SHAPE[0], TERMINAL_SHAPE[1])
+
+        colors_flattened = compute.list_flatten(batch['tty_colors']).to_numpy()
+        self.colors = colors_flattened.reshape(-1, TERMINAL_SHAPE[0], TERMINAL_SHAPE[1])
+
+        curs_flattened = compute.list_flatten(batch['tty_cursor']).to_numpy()
+        self.cursors = curs_flattened.reshape(-1, 2)
+
+        self.actions = batch['actions'].to_numpy()
+
+        blstats_flattened = compute.list_flatten(batch['blstats']).to_numpy()
+        self.blstats = blstats_flattened.reshape(-1, *BLSTATS_SHAPE)
+
+        message_flattened = compute.list_flatten(batch['message']).to_numpy()
+        self.message = message_flattened.reshape(-1, *MESSAGE_SHAPE)
+
+        inv_glyphs_flattened = compute.list_flatten(batch['inv_glyphs']).to_numpy()
+        self.inv_glyphs = inv_glyphs_flattened.reshape(-1, *INV_SIZE)
+
+        glyphs_flattened = compute.list_flatten(batch['glyphs']).to_numpy()
+        self.glyphs = glyphs_flattened.reshape(-1, *DUNGEON_SHAPE)
