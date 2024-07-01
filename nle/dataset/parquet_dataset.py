@@ -93,7 +93,7 @@ def convert_frames(
 
 
 def _ttyrec_generator(
-    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version
+    batch_size, seq_length, rows, cols, load_fn, map_fn, ttyrec_version, max_episode_steps
 ):
     """A generator to fill minibatches with ttyrecs.
 
@@ -140,7 +140,7 @@ def _ttyrec_generator(
     assert all(load_fn(c) for c in converters), "Not enough ttyrecs to fill a batch!"
 
     parquet_converters = [
-        ParquetConverter(seq_length) for c in converters
+        ParquetConverter(seq_length, max_episode_steps) for c in converters
     ]
     for parquet_converter, c in zip(parquet_converters, converters):
         parquet_converter.load_parquet(c.filename)
@@ -190,7 +190,8 @@ class ParquetDataset:
         threadpool=None,
         gameids=None,
         shuffle=True,
-        loop_forever=False
+        loop_forever=False,
+        max_episode_steps: int = 1000000000
     ):
         """
         An iterable dataset to load minibatches of NetHack games from compressed
@@ -236,6 +237,7 @@ class ParquetDataset:
         self.seq_length = seq_length
         self.rows = rows
         self.cols = cols
+        self.max_episode_steps = max_episode_steps
 
         self.shuffle = shuffle
         self.loop_forever = loop_forever
@@ -272,6 +274,8 @@ class ParquetDataset:
 
         if gameids is None:
             gameids = self._games.keys()
+        else:
+            print('using passed in game ids!')
 
         self._core_sql = core_sql
         self._meta_sql = meta_sql
@@ -347,7 +351,8 @@ class ParquetDataset:
             self.cols,
             self._make_load_fn(gameids),
             self._map,
-            self._ttyrec_version
+            self._ttyrec_version,
+            self.max_episode_steps
         )
 
     def get_ttyrecs(self, gameids, chunk_size=None):
@@ -362,6 +367,7 @@ class ParquetDataset:
             self._make_load_fn(gameids),
             self._map,
             self._ttyrec_version,
+            self.max_episode_steps
         ):
             mbs.append({k: t.copy() for k, t in mb.items()})
         return mbs

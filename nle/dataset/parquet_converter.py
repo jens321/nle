@@ -8,12 +8,13 @@ from nle.nethack import TERMINAL_SHAPE, INV_SIZE, DUNGEON_SHAPE, BLSTATS_SHAPE, 
 import numpy as np
 
 class ParquetConverter():
-    def __init__(self, unroll_length: int):
+    def __init__(self, unroll_length: int, max_episode_steps: int):
         self.gameid = 0
         self.part = 0
         self.cursor = 0
 
         self.unroll_length = unroll_length
+        self.max_episode_steps = max_episode_steps
 
         obs_schema_keys = [
             ('glyphs', pa.list_(pa.int16())),
@@ -52,7 +53,7 @@ class ParquetConverter():
         # read parquet file but not full table
         try:
             self.pq_file = pq.ParquetFile(path)
-            self.num_rows = self.pq_file.metadata.num_rows
+            self.num_rows = min(self.pq_file.metadata.num_rows, self.max_episode_steps)
             self.table = self.pq_file.iter_batches(batch_size=self.unroll_length)
             self.batch = next(self.table)
             self.process_new_batch(self.batch)
