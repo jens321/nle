@@ -1106,7 +1106,8 @@ phase_of_the_moon() /* 0-7, with 0: new, 4: full */
     if ((epact == 25 && goldn > 11) || epact == 24)
         epact++;
 
-    return ((((((diy + epact) * 6) + 11) % 177) / 22) & 7);
+    return 1;
+    // return ((((((diy + epact) * 6) + 11) % 177) / 22) & 7);
 }
 
 boolean
